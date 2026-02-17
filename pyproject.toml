@@ -12,4 +12,5 @@ dependencies = [
     "scikit-learn>=1.8.0",
     "sqlalchemy>=2.0.46",
     "torch>=2.10.0",
+    "tqdm>=4.67.3",
 ]
