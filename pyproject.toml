@@ -4,4 +4,12 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "ipykernel>=7.2.0",
+    "numpy>=2.4.2",
+    "pandas>=3.0.0",
+    "psycopg2>=2.9.11",
+    "scikit-learn>=1.8.0",
+    "sqlalchemy>=2.0.46",
+    "torch>=2.10.0",
+]
