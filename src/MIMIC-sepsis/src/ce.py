@@ -1,172 +1,142 @@
-"""
-MIMIC-IV Sepsis Cohort Extraction.
-
-This file is sourced and modified from: https://github.com/matthieukomorowski/AI_Clinician
-"""
-
 import argparse
 import os
-
+import math
 import pandas as pd
-import psycopg2 as pg
+from sqlalchemy import create_engine, text
+from tqdm import tqdm
 
-
+# parse arguments
 parser = argparse.ArgumentParser()
-parser.add_argument("-u", "--username", help="Username used to access the MIMIC Database", type=str)
-parser.add_argument("-p", "--password", help="User's password for MIMIC Database", type=str)
+parser.add_argument("-u", "--username", help="MIMIC Database Username", type=str, required=True)
+parser.add_argument("-p", "--password", help="MIMIC Database Password", type=str, default="")
 pargs = parser.parse_args()
 
-# Initializing database connection
-conn = pg.connect("dbname='mimiciv' user={0} host='localhost' options='--search_path=mimimciv' password={1}".format(pargs.username,pargs.password))
+# connect to database via alchemy engine
+print(f"Connecting to database 'mimiciv' as user '{pargs.username}'...")
+auth_string = f"{pargs.username}"
+if pargs.password:
+    auth_string += f":{pargs.password}"
 
-# Path for processed data storage
-exportdir = os.path.join(os.getcwd(),'processed_files')
+db_url = f"postgresql+psycopg2://{auth_string}@localhost/mimiciv"
+engine = create_engine(db_url, connect_args={'options': '-c search_path=mimiciv_hosp,mimiciv_icu,public'})
 
+
+# create output dir
+exportdir = os.path.join(os.getcwd(), 'processed_files')
 if not os.path.exists(exportdir):
     os.makedirs(exportdir)
 
-# Load all CE data in one query
-print("Loading chartevents data...")
-
-
-query = """
-select distinct stay_id, 
-    extract(epoch from charttime) as charttime, 
-    itemid,
-    case
-        -- Oxygen Flow Device mapping
-        when itemid = 223834 and value = 'None' then '0'
-        when itemid = 223834 and value = 'Nasal cannula' then '2'
-        when itemid = 223834 and value = 'Face tent' then '3'
-        when itemid = 223834 and value = 'Aerosol-cool' then '4'
-        when itemid = 223834 and value = 'Trach mask' then '5'
-        when itemid = 223834 and value = 'High flow nasal cannula' then '6'
-        when itemid = 223834 and value = 'High flow neb' then '6'
-        when itemid = 223834 and value = 'Non-rebreather' then '7'
-        when itemid = 223834 and value = 'Venti mask' then '8'
-        when itemid = 223834 and value = 'Medium conc mask' then '9'
-        when itemid = 223834 and value = 'Endotracheal tube' then '10'
-        when itemid = 223834 and value = 'Tracheostomy tube' then '11'
-        when itemid = 223834 and value = 'T-piece' then '12'
-        when itemid = 223834 and value = 'CPAP mask' then '13'
-        when itemid = 223834 and value = 'Bipap mask' then '13'
-        when itemid = 223834 and value = 'Oxymizer' then '14'
-        when itemid = 223834 and value = 'Other' then '15'
-
-        -- Oxygen Flow Device mapping for item 226732
-        when itemid = 226732 and value = 'None' then '0'
-        when itemid = 226732 and value = 'Nasal cannula' then '2'
-        when itemid = 226732 and value = 'Face tent' then '3'
-        when itemid = 226732 and value = 'Aerosol-cool' then '4'
-        when itemid = 226732 and value = 'Trach mask' then '5'
-        when itemid = 226732 and value = 'High flow nasal cannula' then '6'
-        when itemid = 226732 and value = 'High flow neb' then '6'
-        when itemid = 226732 and value = 'Non-rebreather' then '7'
-        when itemid = 226732 and value = 'Venti mask' then '8'
-        when itemid = 226732 and value = 'Medium conc mask' then '9'
-        when itemid = 226732 and value = 'Endotracheal tube' then '10'
-        when itemid = 226732 and value = 'Tracheostomy tube' then '11'
-        when itemid = 226732 and value = 'T-piece' then '12'
-        when itemid = 226732 and value = 'CPAP mask' then '13'
-        when itemid = 226732 and value = 'Bipap mask' then '13'
-        when itemid = 226732 and value = 'Oxymizer' then '14'
-        when itemid = 226732 and value = 'Ultrasonic neb' then '15'
-        when itemid = 226732 and value = 'Vapomist' then '16'
-        when itemid = 226732 and value = 'Other' then '17'
-
-        -- RASS score mapping (assuming 228096 is the RASS itemid)
-        when itemid = 228096 and value like '0%Alert and calm%' then '0'
-        when itemid = 228096 and value like '-1%Awakens to voice%' then '-1'
-        when itemid = 228096 and value like '-2%Light sedation%' then '-2'
-        when itemid = 228096 and value like '-3%Moderate sedation%' then '-3'
-        when itemid = 228096 and value like '-4%Deep sedation%' then '-4'
-        when itemid = 228096 and value like '-5%Unarousable%' then '-5'
-        when itemid = 228096 and value like '+1%Anxious%' then '1'
-        when itemid = 228096 and value like '+2%Frequent nonpurposeful%' then '2'
-        when itemid = 228096 and value like '+3%Pulls or removes tube%' then '3'
-        when itemid = 228096 and value like '+4%Combative%' then '4'
-        
-        -- For all other numeric values
-        else valuenum
-    end as valuenum
-from mimiciv_icu.chartevents
-where value is not null
-and itemid in (226732, 223834, 227287, 224691, 226707, 226730, 224639, 226512, 226531, 228096,
+# define filter condition (used for both Count and Select)
+# we separate this so we ensure both queries look for the exact same data
+where_clause = """
+WHERE valuenum IS NOT NULL
+  OR (itemid IN (223834, 226732, 228096) AND value IS NOT NULL)
+AND itemid IN (226732, 223834, 227287, 224691, 226707, 226730, 224639, 226512, 226531, 228096,
                220045, 220179, 225309, 220050, 227243, 224167, 220181, 220052, 225312, 224322,
                225310, 224643, 227242, 220051, 220180, 220210, 224422, 224690, 220277, 220227,
                223762, 223761, 224027, 220074, 228368, 228177, 223835, 220339, 
                224700, 224686, 224684, 224421, 224687, 224697, 224695, 224696)
-order by stay_id, charttime
-"""
-"""
- Itemid | Label
------------------------------------------------------
- 226732 | Oxygen Flow 
- 223834 | Oxygen Flow
- 227287 | Oxygen Flow (additional cannula)
- 224691 | Oxygen Flow
- 226707 | Height
- 226730 | Height
- 224639 | Weight
- 226512 | Weight
- 226531 | Weight
- 228096 | Richmond-RAS Scale
- 220045 | Heart Rate 
- 220179 | Systolic Blood Pressure (Arterial)
- 225309 | Systolic Blood Pressure (Arterial)
- 220050 | Systolic Blood Pressure (Arterial)
- 227243 | Systolic Blood Pressure (Arterial)
- 224167 | Systolic Blood Pressure (Arterial)
- 220181 | Blood Pressure mean
- 220052 | Blood Pressure mean
- 225312 | Blood Pressure mean
- 224322 | Blood Pressure mean
- 225310 | Diastolic Blood Pressure (Arterial)
- 224643 | Diastolic Blood Pressure (Arterial)
- 227242 | Diastolic Blood Pressure (Arterial)
- 220051 | Diastolic Blood Pressure (Arterial)
- 220180 | Diastolic Blood Pressure (Arterial)
- 220210 | Respiratory Rate
- 224422 | Respiratory Rate
- 224690 | Respiratory Rate
- 220277 | O2 saturation pulseoxymetry/SpO2
- 220227 | SaO2
- 223762 | Body Temperature
- 223761 | Body Temperature
- 224027 | Body Temperature
- 220074 | Central Venous Pressure (CVP)
- 220059 | PAP systolic
- 220060 | PAP diastolic
- 220061 | PAP mean
- 228368 | Cardiac Index
- 228177 | Cardiac Index
- 223835 | Inspired O2 Fraction (FiO2)
- 220339 | PEEP
- 224700 | PEEP
- 224686 | Tidal Volume
- 224684 | Tidal Volume
- 224421 | Tidal Volume
- 224687 | Minute Volume
- 224697 | MAP (mean airway pressure)
- 224695 | Peak Insp. Pressure
- 224696 | Plateau Pressure
- 226755 | GCS
- 227013 | GCS
 """
 
-# Note: The original code likely used chunks to handle memory constraints or timeout issues
-# If you encounter memory issues with this single query approach, we may need to revert to chunking
+# main query to extract chartevents data 
+# with mappings for Oxygen Flow Device and RASS score
+select_query = f"""
+SELECT stay_id, 
+    extract(epoch from charttime) as charttime, 
+    itemid,
+    CASE
+        -- Oxygen Flow Device mapping
+        WHEN itemid = 223834 AND value = 'None' THEN '0'
+        WHEN itemid = 223834 AND value = 'Nasal cannula' THEN '2'
+        WHEN itemid = 223834 AND value = 'Face tent' THEN '3'
+        WHEN itemid = 223834 AND value = 'Aerosol-cool' THEN '4'
+        WHEN itemid = 223834 AND value = 'Trach mask' THEN '5'
+        WHEN itemid = 223834 AND value = 'High flow nasal cannula' THEN '6'
+        WHEN itemid = 223834 AND value = 'High flow neb' THEN '6'
+        WHEN itemid = 223834 AND value = 'Non-rebreather' THEN '7'
+        WHEN itemid = 223834 AND value = 'Venti mask' THEN '8'
+        WHEN itemid = 223834 AND value = 'Medium conc mask' THEN '9'
+        WHEN itemid = 223834 AND value = 'Endotracheal tube' THEN '10'
+        WHEN itemid = 223834 AND value = 'Tracheostomy tube' THEN '11'
+        WHEN itemid = 223834 AND value = 'T-piece' THEN '12'
+        WHEN itemid = 223834 AND value = 'CPAP mask' THEN '13'
+        WHEN itemid = 223834 AND value = 'Bipap mask' THEN '13'
+        WHEN itemid = 223834 AND value = 'Oxymizer' THEN '14'
+        WHEN itemid = 223834 AND value = 'Other' THEN '15'
+
+        -- Oxygen Flow Device mapping for item 226732
+        WHEN itemid = 226732 AND value = 'None' THEN '0'
+        WHEN itemid = 226732 AND value = 'Nasal cannula' THEN '2'
+        WHEN itemid = 226732 AND value = 'Face tent' THEN '3'
+        WHEN itemid = 226732 AND value = 'Aerosol-cool' THEN '4'
+        WHEN itemid = 226732 AND value = 'Trach mask' THEN '5'
+        WHEN itemid = 226732 AND value = 'High flow nasal cannula' THEN '6'
+        WHEN itemid = 226732 AND value = 'High flow neb' THEN '6'
+        WHEN itemid = 226732 AND value = 'Non-rebreather' THEN '7'
+        WHEN itemid = 226732 AND value = 'Venti mask' THEN '8'
+        WHEN itemid = 226732 AND value = 'Medium conc mask' THEN '9'
+        WHEN itemid = 226732 AND value = 'Endotracheal tube' THEN '10'
+        WHEN itemid = 226732 AND value = 'Tracheostomy tube' THEN '11'
+        WHEN itemid = 226732 AND value = 'T-piece' THEN '12'
+        WHEN itemid = 226732 AND value = 'CPAP mask' THEN '13'
+        WHEN itemid = 226732 AND value = 'Bipap mask' THEN '13'
+        WHEN itemid = 226732 AND value = 'Oxymizer' THEN '14'
+        WHEN itemid = 226732 AND value = 'Ultrasonic neb' THEN '15'
+        WHEN itemid = 226732 AND value = 'Vapomist' THEN '16'
+        WHEN itemid = 226732 AND value = 'Other' THEN '17'
+
+        -- RASS score mapping
+        WHEN itemid = 228096 AND value LIKE '0%Alert and calm%' THEN '0'
+        WHEN itemid = 228096 AND value LIKE '-1%Awakens to voice%' THEN '-1'
+        WHEN itemid = 228096 AND value LIKE '-2%Light sedation%' THEN '-2'
+        WHEN itemid = 228096 AND value LIKE '-3%Moderate sedation%' THEN '-3'
+        WHEN itemid = 228096 AND value LIKE '-4%Deep sedation%' THEN '-4'
+        WHEN itemid = 228096 AND value LIKE '-5%Unarousable%' THEN '-5'
+        WHEN itemid = 228096 AND value LIKE '+1%Anxious%' THEN '1'
+        WHEN itemid = 228096 AND value LIKE '+2%Frequent nonpurposeful%' THEN '2'
+        WHEN itemid = 228096 AND value LIKE '+3%Pulls or removes tube%' THEN '3'
+        WHEN itemid = 228096 AND value LIKE '+4%Combative%' THEN '4'
+        
+        ELSE CAST(valuenum AS TEXT)
+    END AS value
+FROM mimiciv_icu.chartevents
+"""
+
+# excecute the query in chunks and write to CSV
+chunk_size = 100000
+output_file = os.path.join(exportdir, 'chartevents.csv')
+
+print(f"Target file: {output_file}")
+
 try:
-    ce_data = pd.read_sql_query(query, conn)
-    print("Saving combined chartevents data...")
-    ce_data.to_csv(os.path.join(exportdir, 'chartevents.csv'), index=False, sep='|')
-    print("Completed processing chartevents data")
+    # we set stream_results=True to enable server-side cursor and 
+    # avoid loading all data into memory
+    with engine.connect().execution_options(stream_results=True) as conn:
+        
+        # count rows first, to get estimate of processing time
+        print("Calculating total rows (this may take a few minutes)...")
+        count_query = f"SELECT count(*) FROM mimiciv_icu.chartevents {where_clause}"
+        total_rows = conn.execute(text(count_query)).scalar()
+        
+        total_chunks = math.ceil(total_rows / chunk_size)
+        print(f"Total rows to process: {total_rows:,} (approx {total_chunks} chunks)")
+
+        # execute the main query in chunks and write to CSV
+        print("Starting extraction...")
+        chunks = pd.read_sql_query(text(select_query), conn, chunksize=chunk_size)
+        
+        first_chunk = True
+        
+        # iterate over chunks and write to CSV
+        for chunk in tqdm(chunks, total=total_chunks, desc="Progress", unit="chunk"):
+            mode = 'w' if first_chunk else 'a'
+            header = first_chunk
+            
+            chunk.to_csv(output_file, mode=mode, header=header, index=False, sep='|')
+            
+            first_chunk = False
+
+    print(f"\nCompleted!")
+
 except Exception as e:
-    print("Error: The single query approach failed. You may need to use chunking if:")
-    print("1. The database connection times out")
-    print("2. The query result exceeds available memory")
-    print("3. The database has query size limitations")
-    print(f"Error details: {str(e)}")
-
-
-
+    print(f"\nError occurred: {e}")
