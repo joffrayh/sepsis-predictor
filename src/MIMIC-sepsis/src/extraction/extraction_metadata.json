@@ -1,0 +1,8 @@
+{
+    "mechvent": { 
+        "file_name": "icustays", 
+        "extraction_text": "icu stay mapping data",
+        "query":" select * from mimiciv_icu.icustays order by subject_id, hadm_id, stay_id "
+    }
+
+}
