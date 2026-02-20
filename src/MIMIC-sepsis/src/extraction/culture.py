@@ -1,23 +1,22 @@
 import argparse
 import os
-
-import pandas as pd
 import psycopg2 as pg
 
-
+# parse arguments
 parser = argparse.ArgumentParser()
-parser.add_argument("-u", "--username",  help="Username used to access the MIMIC Database", type=str)
-parser.add_argument("-p", "--password",  help="User's password for MIMIC Database", type=str)
+parser.add_argument("-u", "--username", help="MIMIC Database Username", type=str, required=True)
+parser.add_argument("-p", "--password", help="MIMIC Database Password", type=str, default="")
 pargs = parser.parse_args()
 
 # Initializing database connection
-conn = pg.connect("dbname='mimiciv' user={0} host='localhost' options='--search_path=mimimciv' password={1}".format(pargs.username,pargs.password))
+conn = pg.connect("dbname='mimiciv' user={0} host='localhost' options='--search_path=mimiciv' password={1}".format(pargs.username,pargs.password))
 
-# Path for processed data storage
-exportdir = os.path.join(os.getcwd(),'processed_files')
-
+# create output dir
+exportdir = os.path.join(os.getcwd(), 'processed_files')
 if not os.path.exists(exportdir):
     os.makedirs(exportdir)
+
+output_file = os.path.join(exportdir,'culture.csv')
 
 # Extraction of sub-tables
 # There are 43 tables in the Mimic III database. 
@@ -71,15 +70,32 @@ if not os.path.exists(exportdir):
  226131 | ICP Line Tip Cultured
  227726 | AVA Line Tip Cultured
 """
-query = """
-select subject_id, hadm_id, stay_id, extract(epoch from charttime) as charttime, itemid
-from mimiciv_icu.chartevents
-where itemid in (225401, 225437, 225444, 225451, 225454, 225814,
-  225816, 225817, 225818, 225722, 225723, 225724, 225725, 225726, 225727, 225728, 225729, 225730, 225731,
-  225732, 225733, 227726,  225734, 225735,
-  225736, 225768, 226131)
-order by subject_id, hadm_id, charttime
-"""
 
-d = pd.read_sql_query(query,conn)
-d.to_csv(os.path.join(exportdir, 'culture.csv'),index=False,sep='|')
+print("Extracting culture data...")
+
+with conn.cursor() as cur:
+    with open(output_file, 'w') as f:
+        cur.copy_expert(
+            """
+            COPY (
+                select subject_id,
+                       hadm_id,
+                       stay_id,
+                       extract(epoch from charttime) as charttime,
+                       itemid
+                from mimiciv_icu.chartevents
+                where itemid in (
+                    225401, 225437, 225444, 225451, 225454, 225814,
+                    225816, 225817, 225818, 225722, 225723, 225724,
+                    225725, 225726, 225727, 225728, 225729, 225730,
+                    225731, 225732, 225733, 227726, 225734, 225735,
+                    225736, 225768, 226131
+                )
+                order by subject_id, hadm_id, charttime
+            )
+            TO STDOUT WITH CSV HEADER DELIMITER '|'
+            """,
+            f
+        )
+
+print(f"Success! Data saved to: {output_file}")
