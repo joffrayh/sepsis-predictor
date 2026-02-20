@@ -10,7 +10,7 @@ parser.add_argument("-p", "--password", help="MIMIC Database Password", type=str
 pargs = parser.parse_args()
 
 
-# connect to DB (Using SQLAlchemy to fix Pandas warning)
+# setup authentication for DB connection
 print(f"Connecting to database 'mimiciv' as user '{pargs.username}'...")
 auth_string = f"{pargs.username}"
 if pargs.password:
@@ -144,7 +144,7 @@ with engine.connect() as conn:
     ORDER BY subject_id ASC, intime ASC
     """
 
-    # We read using the same connection where the TEMP table exists
+    # qe read using the same connection where the TEMP table exists
     d = pd.read_sql_query(extract_query, conn)
     
     output_file = os.path.join(exportdir, 'demog.csv')
