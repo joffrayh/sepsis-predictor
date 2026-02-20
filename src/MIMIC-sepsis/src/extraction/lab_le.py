@@ -1,44 +1,24 @@
-"""
-MIMIC-IV Sepsis Cohort Extraction.
-
-This file is sourced and modified from: https://github.com/matthieukomorowski/AI_Clinician
-"""
-
 import argparse
 import os
-
-import pandas as pd
 import psycopg2 as pg
 
-
+# parse arguments
 parser = argparse.ArgumentParser()
-parser.add_argument("-u", "--username",  help="Username used to access the MIMIC Database", type=str)
-parser.add_argument("-p", "--password",  help="User's password for MIMIC Database", type=str)
+parser.add_argument("-u", "--username", help="MIMIC Database Username", type=str, required=True)
+parser.add_argument("-p", "--password", help="MIMIC Database Password", type=str, default="")
 pargs = parser.parse_args()
 
 # Initializing database connection
-conn = pg.connect("dbname='mimiciv' user={0} host='localhost' options='--search_path=mimimciv' password={1}".format(pargs.username,pargs.password))
+conn = pg.connect("dbname='mimiciv' user={0} host='localhost' options='--search_path=mimiciv' password={1}".format(pargs.username,pargs.password))
 
-# Path for processed data storage
-exportdir = os.path.join(os.getcwd(),'processed_files')
-
+# create output dir
+exportdir = os.path.join(os.getcwd(), 'processed_files')
 if not os.path.exists(exportdir):
     os.makedirs(exportdir)
 
+output_file = os.path.join(exportdir,'labs_le.csv')
 
 # 7. labs_le (Labs from lab events)
-query = """
-select xx.stay_id, extract(epoch from f.charttime) as timestp, f.itemid, f.valuenum
-from(
-select subject_id, hadm_id, stay_id, intime, outtime
-from mimiciv_icu.icustays
-group by subject_id, hadm_id, stay_id, intime, outtime
-) as xx inner join  mimiciv_hosp.labevents as f on f.hadm_id=xx.hadm_id and f.charttime>=xx.intime-interval '1 day' 
-and f.charttime<=xx.outtime+interval '1 day'  and f.itemid in  (50971, 50822, 50824, 50806, 50931, 51081, 50885, 51003, 51222,
-50810, 51301, 50983, 50902, 50809, 51006, 50912, 50960, 50893, 50808, 50804, 50878, 50861, 51464, 50883, 50976, 50862, 51002, 50889,
-50811, 51221, 51279, 51300, 51265, 51275, 51274, 51237, 50820, 50821, 50818, 50802, 50813, 50882, 50803) and valuenum is not null
-order by f.hadm_id, timestp, f.itemid
-"""
 """
  Itemid | Label
 -----------------------------------------------------
@@ -88,6 +68,47 @@ order by f.hadm_id, timestp, f.itemid
  
 """
 
+print("Extracting lab data from lab events...")
 
-d = pd.read_sql_query(query,conn)
-d.to_csv(os.path.join(exportdir,'labs_le.csv'),index=False,sep='|')
+with conn.cursor() as cur:
+    with open(output_file, 'w') as f:
+        cur.copy_expert(
+            """
+            COPY (
+                select xx.stay_id, 
+                    extract(epoch from f.charttime) as timestp, 
+                    f.itemid, 
+                   f.valuenum
+                from(
+                    select subject_id, 
+                        hadm_id, 
+                        stay_id, 
+                        intime, 
+                        outtime
+                    from mimiciv_icu.icustays
+                    group by subject_id, 
+                        hadm_id, 
+                        stay_id, 
+                        intime, 
+                        outtime
+                ) as xx 
+                inner join mimiciv_hosp.labevents as f on f.hadm_id=xx.hadm_id and
+                    f.charttime>=xx.intime-interval '1 day' and 
+                    f.charttime<=xx.outtime+interval '1 day' and 
+                    f.itemid in  (
+                        50971, 50822, 50824, 50806, 50931, 51081, 50885, 51003, 
+                        51222, 50810, 51301, 50983, 50902, 50809, 51006, 50912, 
+                        50960, 50893, 50808, 50804, 50878, 50861, 51464, 50883, 
+                        50976, 50862, 51002, 50889, 50811, 51221, 51279, 51300, 
+                        51265, 51275, 51274, 51237, 50820, 50821, 50818, 50802, 
+                        50813, 50882, 50803
+                    ) and 
+                    valuenum is not null
+                order by f.hadm_id, timestp, f.itemid
+            )
+            TO STDOUT WITH CSV HEADER DELIMITER '|'
+            """,
+            f
+        )
+
+print(f"Success! Data saved to: {output_file}")
