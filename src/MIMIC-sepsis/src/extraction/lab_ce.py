@@ -1,47 +1,25 @@
-"""
-MIMIC-IV Sepsis Cohort Extraction.
-
-This file is sourced and modified from: https://github.com/matthieukomorowski/AI_Clinician
-"""
-
 import argparse
 import os
-
-import pandas as pd
 import psycopg2 as pg
 
-
+# parse arguments
 parser = argparse.ArgumentParser()
-parser.add_argument("-u", "--username", help="Username used to access the MIMIC Database", type=str)
-parser.add_argument("-p", "--password", help="User's password for MIMIC Database", type=str)
+parser.add_argument("-u", "--username", help="MIMIC Database Username", type=str, required=True)
+parser.add_argument("-p", "--password", help="MIMIC Database Password", type=str, default="")
 pargs = parser.parse_args()
 
 # Initializing database connection
-conn = pg.connect("dbname='mimiciv' user={0} host='localhost' options='--search_path=mimimciv' password={1}".format(pargs.username,pargs.password))
+conn = pg.connect("dbname='mimiciv' user={0} host='localhost' options='--search_path=mimiciv' password={1}".format(pargs.username,pargs.password))
 
-# Path for processed data storage
-exportdir = os.path.join(os.getcwd(),'processed_files')
-
+# create output dir
+exportdir = os.path.join(os.getcwd(), 'processed_files')
 if not os.path.exists(exportdir):
     os.makedirs(exportdir)
 
+output_file = os.path.join(exportdir,'labs_ce.csv')
 
 # 6. labs_ce (Labs from chartevents)
 # Each itemid here corresponds to single measurement type
-query = """
-select stay_id, extract(epoch from charttime) as charttime, itemid, valuenum
-from mimiciv_icu.chartevents
-where valuenum is not null and stay_id is not null and 
-itemid in  (221828, 227442, 227464, 220645, 226534, 220602, 
-226536, 225664, 220621, 226537, 225624,	220615, 229761,
-220635, 225625, 225667,	220587, 220644, 225690, 
-225651, 220560, 227456, 227429, 227444, 220228,	
-220545, 226540, 220546, 227457,	227465, 227466, 
-220507, 227467, 223830, 220224, 220235, 224828, 
-225668, 227443, 228640, 227686)
-order by stay_id, charttime, itemid
-"""
-
 """
  Itemid | Label
 -----------------------------------------------------
@@ -89,5 +67,34 @@ order by stay_id, charttime, itemid
 
 """
 
-d = pd.read_sql_query(query,conn)
-d.to_csv(os.path.join(exportdir,'labs_ce.csv'),index=False,sep='|')
+print("Extracting lab data from chartevents...")
+
+with conn.cursor() as cur:
+    with open(output_file, 'w') as f:
+        cur.copy_expert(
+            """
+            COPY (
+                select stay_id, 
+                    extract(epoch from charttime) as charttime, 
+                    itemid, 
+                    valuenum
+                from mimiciv_icu.chartevents
+                where valuenum is not null and 
+                    stay_id is not null and 
+                    itemid in  (
+                        221828, 227442, 227464, 220645, 226534, 220602, 
+                        226536, 225664, 220621, 226537, 225624,	220615, 229761,
+                        220635, 225625, 225667,	220587, 220644, 225690, 
+                        225651, 220560, 227456, 227429, 227444, 220228,	
+                        220545, 226540, 220546, 227457,	227465, 227466, 
+                        220507, 227467, 223830, 220224, 220235, 224828, 
+                        225668, 227443, 228640, 227686
+                    )
+                order by stay_id, charttime, itemid
+            )
+            TO STDOUT WITH CSV HEADER DELIMITER '|'
+            """,
+            f
+        )
+
+print(f"Success! Data saved to: {output_file}")
