@@ -1,23 +1,22 @@
 import argparse
 import os
-
-import pandas as pd
 import psycopg2 as pg
 
-
+# parse arguments
 parser = argparse.ArgumentParser()
-parser.add_argument("-u", "--username", help="Username used to access the MIMIC Database", type=str)
-parser.add_argument("-p", "--password", help="User's password for MIMIC Database", type=str)
+parser.add_argument("-u", "--username", help="MIMIC Database Username", type=str, required=True)
+parser.add_argument("-p", "--password", help="MIMIC Database Password", type=str, default="")
 pargs = parser.parse_args()
 
 # Initializing database connection
-conn = pg.connect("dbname='mimiciv' user={0} host='localhost' options='--search_path=mimimciv' password={1}".format(pargs.username,pargs.password))
+conn = pg.connect("dbname='mimiciv' user={0} host='localhost' options='--search_path=mimiciv' password={1}".format(pargs.username,pargs.password))
 
-# Path for processed data storage
-exportdir = os.path.join(os.getcwd(),'processed_files')
-
+# create output dir
+exportdir = os.path.join(os.getcwd(), 'processed_files')
 if not os.path.exists(exportdir):
     os.makedirs(exportdir)
+
+output_file = os.path.join(exportdir, 'icustays.csv')
 
 # Extraction of sub-tables
 # There are 43 tables in the Mimic III database. 
@@ -34,11 +33,23 @@ if not os.path.exists(exportdir):
 # considered to be septic, using the Sepsis 3 criteria
 
 # 0. icustay mappings
-query = """
-select * 
-from mimiciv_icu.icustays
-order by subject_id, hadm_id, stay_id
-"""
 
-d = pd.read_sql_query(query,conn)
-d.to_csv(os.path.join(exportdir, 'icustays.csv'),index=False,sep='|')
+print("Extracting icu stay mapping data...")
+
+with conn.cursor() as cur:
+    with open(output_file, 'w') as f:
+        cur.copy_expert(
+            """
+            COPY (
+                select * 
+                from mimiciv_icu.icustays
+                order by subject_id, 
+                    hadm_id, 
+                    stay_id
+            )
+            TO STDOUT WITH CSV HEADER DELIMITER '|'
+            """,
+            f
+        )
+
+print(f"Success! Data saved to: {output_file}")
