@@ -54,7 +54,7 @@ fluids corrected for tonicity
 
 
 
-print("Extracting culture data...")
+print("Extracting fluid data...")
 
 with conn.cursor() as cur:
     with open(output_file, 'w') as f:
