@@ -4,6 +4,7 @@ import math
 import pandas as pd
 from sqlalchemy import create_engine, text
 from tqdm import tqdm
+import subprocess
 
 # parse arguments
 parser = argparse.ArgumentParser()
@@ -98,15 +99,17 @@ SELECT stay_id,
         WHEN itemid = 228096 AND value LIKE '+4%Combative%' THEN '4'
         
         ELSE CAST(valuenum AS TEXT)
-    END AS value
+    END AS valuenum
 FROM mimiciv_icu.chartevents
+{where_clause}
 """
 
 # excecute the query in chunks and write to CSV
 chunk_size = 100000
-output_file = os.path.join(exportdir, 'chartevents.csv')
+temp_file = os.path.join(exportdir, 'chartevents_temp.csv')
+final_file = os.path.join(exportdir, 'chartevents.csv')
 
-print(f"Target file: {output_file}")
+print(f"Target file: {final_file}")
 
 try:
     # we set stream_results=True to enable server-side cursor and 
@@ -132,11 +135,73 @@ try:
             mode = 'w' if first_chunk else 'a'
             header = first_chunk
             
-            chunk.to_csv(output_file, mode=mode, header=header, index=False, sep='|')
+            chunk.to_csv(temp_file, mode=mode, header=header, index=False, sep='|')
             
             first_chunk = False
 
-    print(f"\nCompleted!")
+    # sort and remove duplicates
+    print("\nSorting and removing duplicates...")
 
+    # "C" locale for speed
+    sort_env = os.environ.copy()
+    sort_env["LC_ALL"] = "C"
+    
+    # tell 'sort' to use our export directory for temp files
+    # don't use /tmp as it has limited space
+    sort_env["TMPDIR"] = exportdir 
+
+    # write the header
+    with open(temp_file, 'rb') as f_in:
+        header = f_in.readline()
+    with open(final_file, 'wb') as f_out:
+        f_out.write(header)
+
+    # The Command: Read from Stdin -> Sort -> Uniq -> Append to File
+    cmd = f"sort -t '|' -k1,1 -k2,2n --parallel=4 | uniq >> {final_file}"
+
+    # start the subprocess with the updated environment
+    process = subprocess.Popen(cmd, shell=True, stdin=subprocess.PIPE, env=sort_env)
+
+    try:
+        with open(temp_file, 'rb') as f_in:
+            # skip the header in the input (we already wrote it)
+            f_in.readline()
+            
+            # get total size for tqdm
+            total_bytes = os.path.getsize(temp_file)
+            
+            # read in 64MB chunks
+            chunk_size = 64 * 1024 * 1024 
+            
+            # feed the chunks to the sort process 
+            with tqdm(total=total_bytes, unit='B', unit_scale=True, desc="Sorting") as pbar:
+                while True:
+                    chunk = f_in.read(chunk_size)
+                    if not chunk:
+                        break
+                    try:
+                        process.stdin.write(chunk)
+                        pbar.update(len(chunk))
+                    except BrokenPipeError:
+                        # this catches the error if 'sort' dies (e.g. no space)
+                        break
+        
+        # close stdin to signal to 'sort' that we are done sending data
+        process.stdin.close()
+        
+        print("Data read complete. Waiting for final merge (this usually takes 1-2 mins)...")
+        return_code = process.wait()
+        
+        if return_code != 0:
+            raise subprocess.CalledProcessError(return_code, cmd)
+        
+    except Exception as e:
+        process.kill()
+        raise e
+
+    if os.path.exists(temp_file):
+        os.remove(temp_file)
+        
+    print(f"Completed! Final sorted file saved at: {final_file}")
 except Exception as e:
     print(f"\nError occurred: {e}")
