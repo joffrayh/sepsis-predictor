@@ -1,52 +1,24 @@
-"""
-MIMIC-IV Sepsis Cohort Extraction.
-
-This file is sourced and modified from: https://github.com/matthieukomorowski/AI_Clinician
-"""
-
 import argparse
 import os
-
-import pandas as pd
 import psycopg2 as pg
 
-
+# parse arguments
 parser = argparse.ArgumentParser()
-parser.add_argument("-u", "--username", help="Username used to access the MIMIC Database", type=str)
-parser.add_argument("-p", "--password", help="User's password for MIMIC Database", type=str)
+parser.add_argument("-u", "--username", help="MIMIC Database Username", type=str, required=True)
+parser.add_argument("-p", "--password", help="MIMIC Database Password", type=str, default="")
 pargs = parser.parse_args()
 
 # Initializing database connection
-conn = pg.connect("dbname='mimiciv' user={0} host='localhost' options='--search_path=mimimciv' password={1}".format(pargs.username,pargs.password))
+conn = pg.connect("dbname='mimiciv' user={0} host='localhost' options='--search_path=mimiciv' password={1}".format(pargs.username,pargs.password))
 
-# Path for processed data storage
-exportdir = os.path.join(os.getcwd(),'processed_files')
-
+# create output dir
+exportdir = os.path.join(os.getcwd(), 'processed_files')
 if not os.path.exists(exportdir):
     os.makedirs(exportdir)
 
+output_file = os.path.join(exportdir,'preadm_fluid.csv')
 
 # 12. preadm_fluid (Pre-admission fluid intake)
-query = """
-with mv as
-(
-select ie.stay_id, sum(ie.amount) as sum
-from mimiciv_icu.inputevents ie, mimiciv_icu.d_items ci
-where ie.itemid=ci.itemid and ie.itemid in (
-226361,226363, 226364, 226365, 226367, 226368, 
-226369, 226370, 226371, 226372, 226375, 226376, 
-227070, 227071, 227072)
-group by stay_id
-)
-
-select pt.stay_id,
-case when mv.sum is not null then mv.sum
-else null end as inputpreadm
-from mimiciv_icu.icustays pt
-left outer join mv
-on mv.stay_id=pt.stay_id
-order by stay_id
-"""
 
 """
  Itemid | Label
@@ -69,5 +41,39 @@ order by stay_id
 """
 
 
-d = pd.read_sql_query(query,conn)
-d.to_csv(os.path.join(exportdir,'preadm_fluid.csv'),index=False,sep='|')
+# mechvent (Mechanical ventilation)
+print("Extracting pre-admission fluid data...")
+
+with conn.cursor() as cur:
+    with open(output_file, 'w') as f:
+        cur.copy_expert(
+            """
+            COPY (
+                with mv as (
+                    select ie.stay_id, 
+                        sum(ie.amount) as sum
+                    from mimiciv_icu.inputevents ie, 
+                        mimiciv_icu.d_items ci
+                    where ie.itemid=ci.itemid and ie.itemid in (
+                        226361,226363, 226364, 226365, 226367, 226368, 
+                        226369, 226370, 226371, 226372, 226375, 226376, 
+                        227070, 227071, 227072
+                    )
+                    group by stay_id
+                )
+
+                select pt.stay_id,
+                    case 
+                        when mv.sum is not null then mv.sum
+                        else null end as inputpreadm
+                from mimiciv_icu.icustays pt
+                left outer join mv
+                    on mv.stay_id=pt.stay_id
+                order by stay_id
+            )
+            TO STDOUT WITH CSV HEADER DELIMITER '|'
+            """,
+            f
+        )
+
+print(f"Success! Data saved to: {output_file}")
