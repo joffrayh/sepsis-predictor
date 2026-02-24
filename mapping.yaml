@@ -1,0 +1,101 @@
+mimic_iv_sepsis_preprocessing_columns:
+
+  subject_id:
+    stands_for: "Unique patient identifier"
+    description: "Identifier for an individual patient across all hospital admissions"
+    units: "None (integer ID)"
+
+  hadm_id:
+    stands_for: "Hospital admission ID"
+    description: "Unique identifier for a specific hospital admission for a patient"
+    units: "None (integer ID)"
+
+  stay_id:
+    stands_for: "ICU stay ID"
+    description: "Unique identifier for a specific ICU stay within a hospital admission"
+    units: "None (integer ID)"
+
+  admittime:
+    stands_for: "Hospital admission time"
+    description: "Timestamp when the patient was admitted to the hospital"
+    units: "Unix timestamp (seconds) or datetime"
+
+  dischtime:
+    stands_for: "Hospital discharge time"
+    description: "Timestamp when the patient was discharged from the hospital"
+    units: "Unix timestamp (seconds) or datetime"
+
+  intime:
+    stands_for: "ICU admission time"
+    description: "Timestamp when the patient entered the ICU"
+    units: "Unix timestamp (seconds) or datetime"
+
+  outtime:
+    stands_for: "ICU discharge time"
+    description: "Timestamp when the patient left the ICU"
+    units: "Unix timestamp (seconds) or datetime"
+
+  starttime:
+    stands_for: "Medication administration start time"
+    description: "Timestamp when an antibiotic administration began"
+    units: "Unix timestamp (seconds) or datetime"
+
+  charttime:
+    stands_for: "Event charted time"
+    description: "Timestamp when a clinical event (lab, culture, microbiology) was recorded"
+    units: "Unix timestamp (seconds) or datetime"
+
+  chartdate:
+    stands_for: "Event charted date"
+    description: "Date (without precise time) when a microbiology event was recorded; used to fill missing charttime"
+    units: "Date"
+
+  morta_90:
+    stands_for: "90-day mortality indicator"
+    description: "Binary flag indicating whether the patient died within 90 days of admission"
+    units: "0 = No, 1 = Yes"
+
+  morta_hosp:
+    stands_for: "In-hospital mortality indicator"
+    description: "Binary flag indicating whether the patient died during the hospital stay"
+    units: "0 = No, 1 = Yes"
+
+  charlson_comorbidity_index:
+    stands_for: "Charlson Comorbidity Index (CCI)"
+    description: "Weighted score summarizing comorbidity burden to estimate mortality risk"
+    units: "Score (integer, typically 0+)"
+
+  prev_dischtime:
+    stands_for: "Previous discharge time"
+    description: "Discharge time of the patient's previous hospital admission (used for readmission calculation)"
+    units: "Unix timestamp (seconds) or datetime"
+
+  re_admission:
+    stands_for: "30-day ICU readmission flag"
+    description: "Binary indicator of whether admission occurred within 30 days of previous discharge"
+    units: "0 = No, 1 = Yes"
+
+  stay_count:
+    stands_for: "Number of ICU stays per patient or admission"
+    description: "Count of ICU stays associated with a subject_id or hadm_id"
+    units: "Count (integer)"
+
+  idx:
+    stands_for: "Temporary row index"
+    description: "Helper column used to preserve row positions during merge operations"
+    units: "None (integer index)"
+
+  abx_idx:
+    stands_for: "Antibiotic event index"
+    description: "Temporary index used to track antibiotic rows during infection onset matching"
+    units: "None (integer index)"
+
+  diff_hr:
+    stands_for: "Time difference in hours"
+    description: "Absolute difference between antibiotic starttime and bacteriology charttime"
+    units: "Hours"
+
+  onset_time:
+    stands_for: "Presumed infection onset time"
+    description: "Timestamp determined according to Sepsis-3 temporal criteria between antibiotics and culture"
+    units: "Unix timestamp (seconds) or datetime"
