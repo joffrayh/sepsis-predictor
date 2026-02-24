@@ -1,40 +1,24 @@
-"""
-MIMIC-IV Sepsis Cohort Extraction.
-
-This file is sourced and modified from: https://github.com/matthieukomorowski/AI_Clinician
-"""
-
 import argparse
 import os
-
-import pandas as pd
 import psycopg2 as pg
 
-
+# parse arguments
 parser = argparse.ArgumentParser()
-parser.add_argument("-u", "--username", help="Username used to access the MIMIC Database", type=str)
-parser.add_argument("-p", "--password", help="User's password for MIMIC Database", type=str)
+parser.add_argument("-u", "--username", help="MIMIC Database Username", type=str, required=True)
+parser.add_argument("-p", "--password", help="MIMIC Database Password", type=str, default="")
 pargs = parser.parse_args()
 
 # Initializing database connection
-conn = pg.connect("dbname='mimiciv' user={0} host='localhost' options='--search_path=mimimciv' password={1}".format(pargs.username,pargs.password))
+conn = pg.connect("dbname='mimiciv' user={0} host='localhost' options='--search_path=mimiciv' password={1}".format(pargs.username,pargs.password))
 
-# Path for processed data storage
-exportdir = os.path.join(os.getcwd(),'processed_files')
-
+# create output dir
+exportdir = os.path.join(os.getcwd(), 'processed_files')
 if not os.path.exists(exportdir):
     os.makedirs(exportdir)
 
-# 8. uo (Real-time Urine Output)
-query = """
-select stay_id, extract(epoch from charttime) as charttime, itemid, value
-from mimiciv_icu.outputevents
-where stay_id is not null and value is not null and itemid in 
-(226559, 226560, 227510, 226561, 227489,
-226584, 226563, 226564, 226565, 226557, 226558, 226713, 226567)
-order by stay_id, charttime, itemid
-"""
+output_file = os.path.join(exportdir,'uo.csv')
 
+# 8. uo (Real-time Urine Output)
 """
  Itemid | Label
 -----------------------------------------------------
@@ -53,5 +37,29 @@ order by stay_id, charttime, itemid
  226567 | Straight Cath
 """
 
-d = pd.read_sql_query(query,conn)
-d.to_csv(os.path.join(exportdir,'uo.csv'),index=False,sep='|')
+
+# mechvent (Mechanical ventilation)
+print("Extracting urine output data...")
+
+with conn.cursor() as cur:
+    with open(output_file, 'w') as f:
+        cur.copy_expert(
+            """
+            COPY (
+                select stay_id, 
+                    extract(epoch from charttime) as charttime, 
+                    itemid, 
+                    value
+                from mimiciv_icu.outputevents
+                where stay_id is not null and value is not null and itemid in (
+                    226559, 226560, 227510, 226561, 227489,
+                    226584, 226563, 226564, 226565, 226557, 226558, 226713, 226567
+                )
+                order by stay_id, charttime, itemid
+            )
+            TO STDOUT WITH CSV HEADER DELIMITER '|'
+            """,
+            f
+        )
+
+print(f"Success! Data saved to: {output_file}")
