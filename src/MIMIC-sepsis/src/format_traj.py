@@ -202,7 +202,7 @@ def handle_outliers(df):
     print('\tHandling SpO2 outliers with unique logic...')
     if 'spo2' in df.columns:
         df.loc[df['spo2'] > 150, 'spo2'] = np.nan
-        df.loc[df['spo2'] > 100, 'spo2'] = 100
+        df.loc[df['spo2'] > 1/00, 'spo2'] = 100
     
     # handle temperature special case
     print('\tHandling temperature outliers with unique logic...')
@@ -426,12 +426,12 @@ def sample_and_hold(df, vitalslab_hold):
 def standardize_patient_trajectories(init_traj, data_dict, onset, timestep=4, window_before=24, window_after=72):
     '''
     standardise patient trajectories to fixed time steps (e.g. every 4 hours) 
-    relative to sepsis onset time.
+    relative to infection onset time.
     For each time step, we take the mean of all measurements within that time step.
     '''
-    print('Standardising trajectories to fixed time step (Optimised Dictionary Lookups)...')
+    print('Standardising trajectories to fixed time step...')
     
-    # create very fast hash maps for the secondary tables
+    # create hash maps for the secondary tables
     fluid_grp = {k: v for k, v in data_dict['fluid'].groupby('stay_id')} if 'fluid' in data_dict else {}
     vaso_grp = {k: v for k, v in data_dict['vaso'].groupby('stay_id')} if 'vaso' in data_dict else {}
     uo_grp = {k: v for k, v in data_dict['UO'].groupby('stay_id')} if 'UO' in data_dict else {}
@@ -451,8 +451,8 @@ def standardize_patient_trajectories(init_traj, data_dict, onset, timestep=4, wi
     
     grouped_traj = init_traj.groupby('stay_id')
     
-    # for each patient trajectory, we create fixed time steps relative to sepsis 
-    # onset and estimate measurements from within those time steps
+    # for each patient trajectory, we create fixed time steps relative to 
+    # infection onset and estimate measurements from within those time steps
     for stay_id, patient_traj in tqdm(
             grouped_traj,
             desc='\tStandardising per stay_id',
