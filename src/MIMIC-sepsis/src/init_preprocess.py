@@ -1,7 +1,7 @@
 """
-This script performs the secondary stage of data preprocessing for a sepsis cohort 
-extracted from the MIMIC-IV database. It takes the intermediate CSV files, cleans 
-the data, and aligns clinical events to identify Sepsis-3 infection onset times.
+This script performs the secondary stage of data preprocessing from the MIMIC-IV database. 
+It takes the intermediate CSV files, cleans the data, and aligns clinical events 
+to identify infection onset times.
 
 Key Operations:
 * Memory-Optimized Loading: Selectively loads the necessary files (demographics, 
@@ -10,7 +10,7 @@ Key Operations:
   handles missing variables, and calculates 30-day hospital readmission flags.
 * Stay ID Imputation: Uses time-window logic (+/- 48 hours) 
   to map unassociated clinical events to their correct ICU stay IDs.
-* Sepsis-3 Onset Calculation: Determines the presumed onset of infection by evaluating 
+* Onset Calculation: Determines the presumed onset of infection by evaluating 
   the temporal relationship between antibiotic administration and bacteriological sampling 
   (Abx given <= 24 hours before or <= 72 hours after a culture).
 

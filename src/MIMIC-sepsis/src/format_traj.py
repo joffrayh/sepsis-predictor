@@ -332,6 +332,13 @@ def estimate_fio2(df):
 def handle_unit_conversions(df):
     '''
     Handle unit conversions for temperature, hemoglobin/hematocrit and bilirubin.
+
+    The function uses empirical conversion formulas to fill in missing values
+    when one measurement is available but its corresponding unit/related measurement is not.
+
+    - Temperature conversions use standard F-C formula: C = (F - 32) / 1.8
+    - Hemoglobin-hematocrit relationship: Hct = (Hgb * 2.862) + 1.216
+    - Bilirubin relationship: Dir = (Total * 0.6934) - 0.1752
     '''
     print('Converting units...')
     mask = (df['temp_F'] > 25) & (df['temp_F'] < 45)  
