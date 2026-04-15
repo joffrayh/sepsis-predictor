@@ -215,7 +215,6 @@ def build_full_cohort(onset_df, demog):
     
     # anchor is always intime — consistent across septic and non-septic patients
     merged['anchor_time'] = merged['intime']
-    merged['onset_time'] = merged['onset_time'].notna().astype(int)
     
     # retain onset_time for downstream labelling 
     return merged[['subject_id', 'stay_id', 'anchor_time', 'intime', 'onset_time']]

@@ -812,32 +812,24 @@ def add_septic_shock_flag(df):
     print('Adding septic shock flags...')
     df = df.sort_values(['stay_id', 'timestamp'])
 
-    WINDOW_STEPS = max(1, 12 // 4)
+
+    has_sepsis = df['sepsis'].isin([1, 2])
     
-    df['rolling_fluid'] = df.groupby('stay_id')['fluid_step'].rolling(
-        window=WINDOW_STEPS, min_periods=1
-    ).sum().reset_index(level=0, drop=True)
+    shock_clinical_criteria = (df['lactate'] > 2.0) & (df['map'] < 65) 
     
-    # Sepsis-3: haemodynamic criteria AND confirmed infection (onset_time is not NaN)
-    has_infection = df['onset_time'].notna()
-    shock_condition = (
-        has_infection &
-        (df['rolling_fluid'] >= 2000) &
-        (df['map'] < 65) &
-        (df['lactic_acid'] > 2)
-    )
-    
+    shock_condition = has_sepsis & shock_clinical_criteria
+
     df['septic_shock'] = 0
     first_shock = df[shock_condition].groupby('stay_id').head(1).index
     df.loc[first_shock, 'septic_shock'] = 1
-    
-    df['has_shocked'] = df.groupby('stay_id')['septic_shock'].cumsum()
-    censored_mask = (df['has_shocked'] == 1) & (df['septic_shock'] == 0)
-    df.loc[censored_mask, 'septic_shock'] = 2
-    
-    return df.drop(columns=['rolling_fluid', 'has_shocked'])
 
-def add_sepsis_flag(df):
+    df['has_shock'] = df.groupby('stay_id')['septic_shock'].cumsum()
+    censored_mask = (df['has_shock'] == 1) & (df['septic_shock'] == 0)
+    df.loc[censored_mask, 'septic_shock'] = 2
+
+    return df.drop(columns=['has_shock'])
+
+def add_infection_and_sepsis_flag(df):
     '''
     Add sepsis flags based on Sepsis-3 criteria: SOFA >= 2 AND confirmed
     infection (onset_time is not NaN). Non-septic patients (onset_time is NaN)
@@ -847,9 +839,12 @@ def add_sepsis_flag(df):
     print('Adding sepsis flags...')
     df = df.sort_values(['stay_id', 'timestamp'])
 
-    # Both infection confirmation AND SOFA >= 2 required
-    has_infection = df['onset_time'].notna()
-    sepsis_condition = has_infection & (df['sofa_score'] >= 2)
+    df['infection_active'] = 0
+    
+    is_actively_infected = df['onset_time'].notna() & (df['timestamp'] >= df['onset_time'])
+    df.loc[is_actively_infected, 'infection_active'] = 1
+    
+    sepsis_condition = (df['infection_active'] == 1) & (df['sofa_score'] >= 2)
 
     df['sepsis'] = 0
     first_sepsis = df[sepsis_condition].groupby('stay_id').head(1).index
@@ -945,8 +940,8 @@ def main():
     # 7. Derived variables & vectorised exclusion criteria & septic shock/sepsis flags
     init_traj = calculate_derived_variables(init_traj)    
     init_traj = apply_exclusion_criteria(init_traj)
+    init_traj = add_infection_and_sepsis_flag(init_traj)
     init_traj = add_septic_shock_flag(init_traj)
-    init_traj = add_sepsis_flag(init_traj)
 
     # 8. Save
     output_path = f"{args.output_dir}/patient_timeseries_v4_v2.parquet"
