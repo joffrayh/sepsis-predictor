@@ -15,3 +15,11 @@ data/
 
 # testing environment
 test/
+
+# MLflow
+mlruns/
+mlflow.db
+
+# models
+*.pth
+artifacts*/
