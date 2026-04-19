@@ -43,7 +43,7 @@ feature_engineering:
     - "hours_since_platelets"
 
 optimisation:
-  num_trials: 50
+  num_trials: 1
 
 models:
   lightgbm:
@@ -73,3 +73,20 @@ models:
       reg_lambda: [1.0, 50.0, "log"]
       gamma: [0.0, 10.0, "float"]
       n_estimators: [100, 600, "int"]
+
+  lstm:
+    run: true
+    params:
+      batch_size: 256
+      epochs: 1
+      learning_rate: 0.001
+      patience: 4
+      # Model Architecture
+      hidden_dim: 64
+      num_layers: 2
+      dropout: 0.2
+      num_heads: 4
+      fc_dim: 32
+      # Regularization
+      weight_decay: 1.0e-5
+      clip_grad_norm: 1.0
