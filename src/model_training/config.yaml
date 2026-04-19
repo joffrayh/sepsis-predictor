@@ -1,5 +1,6 @@
 experiment:
   base_name: "Sepsis_Prediction"
+  random_state: 42
 
 data:
   path: "data/processed_files/patient_timeseries_with_features.parquet"
@@ -7,86 +8,86 @@ data:
   target_horizon: 1
   timestep_duration_hours: 4
 
-split:
-  train_frac: 0.70
-  val_frac: 0.15
-  test_frac: 0.15
-  random_state: 42
+  split:
+    train_frac: 0.70
+    val_frac: 0.15
+    test_frac: 0.15
 
 system:
   n_jobs: -1
-  artifact_dir: "artifacts_pipeline"
+  artifact_dir: "artifacts"
   save_models: true
 
-feature_engineering:
-  use_lags: true
-  num_lags: 3
-  lag_exclude_cols:
-    - "gender"
-    - "age"
-    - "charlson_comorbidity_index"
-    - "hours_since_lactate"
-    - "hours_since_wbc"
-    - "hours_since_creatinine"
-    - "hours_since_platelets"
+ml_pipeline:
+  feature_engineering:
+    use_lags: false
+    num_lags: 3
+    lag_exclude_cols:
+      - "gender"
+      - "age"
+      - "charlson_comorbidity_index"
+      - "hours_since_lactate"
+      - "hours_since_wbc"
+      - "hours_since_creatinine"
+      - "hours_since_platelets"
 
-  use_rolling: true
-  # window sizes in actual hours
-  rolling_windows_hours: [8, 16]
-  rolling_exclude_cols:
-    - "gender"
-    - "age"
-    - "charlson_comorbidity_index"
-    - "hours_since_lactate"
-    - "hours_since_wbc"
-    - "hours_since_creatinine"
-    - "hours_since_platelets"
+    use_rolling: false
+    # window sizes in actual hours
+    rolling_windows_hours: [8, 16]
+    rolling_exclude_cols:
+      - "gender"
+      - "age"
+      - "charlson_comorbidity_index"
+      - "hours_since_lactate"
+      - "hours_since_wbc"
+      - "hours_since_creatinine"
+      - "hours_since_platelets"
 
-optimisation:
-  num_trials: 1
+  optimisation:
+    num_trials: 1
 
-models:
-  lightgbm:
-    run: true
-    search_space:
-      learning_rate: [0.005, 0.05, "log"]
-      num_leaves: [3, 10, "int"]
-      max_depth: [2, 4, "int"]
-      min_child_samples: [1000, 10000, "int_log"]
-      subsample: [0.2, 0.7, "float"]
-      colsample_bytree: [0.1, 0.4, "float"]
-      scale_pos_weight: [5.0, 30.0, "float"]
-      reg_alpha: [1.0, 50.0, "log"]
-      reg_lambda: [1.0, 50.0, "log"]
-      n_estimators: [100, 600, "int"]
-      
-  xgboost:
-    run: true
-    search_space:
-      learning_rate: [0.005, 0.05, "log"]
-      max_depth: [2, 4, "int"]
-      min_child_weight: [10.0, 100.0, "log"]
-      subsample: [0.2, 0.7, "float"]
-      colsample_bytree: [0.1, 0.4, "float"]
-      scale_pos_weight: [5.0, 30.0, "float"]
-      reg_alpha: [1.0, 50.0, "log"]
-      reg_lambda: [1.0, 50.0, "log"]
-      gamma: [0.0, 10.0, "float"]
-      n_estimators: [100, 600, "int"]
+  models:
+    lightgbm:
+      run: true
+      search_space:
+        learning_rate: [0.005, 0.05, "log"]
+        num_leaves: [3, 10, "int"]
+        max_depth: [2, 4, "int"]
+        min_child_samples: [1000, 10000, "int_log"]
+        subsample: [0.2, 0.7, "float"]
+        colsample_bytree: [0.1, 0.4, "float"]
+        scale_pos_weight: [5.0, 30.0, "float"]
+        reg_alpha: [1.0, 50.0, "log"]
+        reg_lambda: [1.0, 50.0, "log"]
+        n_estimators: [100, 600, "int"]
+        
+    xgboost:
+      run: true
+      search_space:
+        learning_rate: [0.005, 0.05, "log"]
+        max_depth: [2, 4, "int"]
+        min_child_weight: [10.0, 100.0, "log"]
+        subsample: [0.2, 0.7, "float"]
+        colsample_bytree: [0.1, 0.4, "float"]
+        scale_pos_weight: [5.0, 30.0, "float"]
+        reg_alpha: [1.0, 50.0, "log"]
+        reg_lambda: [1.0, 50.0, "log"]
+        gamma: [0.0, 10.0, "float"]
+        n_estimators: [100, 600, "int"]
 
-  lstm:
-    run: true
-    params:
-      batch_size: 256
-      epochs: 1
-      learning_rate: 0.001
-      patience: 4
-      # Model Architecture
-      hidden_dim: 64
-      num_layers: 2
-      dropout: 0.2
-      num_heads: 4
-      fc_dim: 32
-      # Regularization
-      weight_decay: 1.0e-5
-      clip_grad_norm: 1.0
+lstm_pipeline:
+  run: true
+  params:
+    batch_size: 256
+    epochs: 1
+    learning_rate: 0.001
+    patience: 4
+    # Model Architecture
+    hidden_dim: 64
+    num_layers: 2
+    dropout: 0.2
+    num_heads: 4
+    fc_dim: 32
+    # Regularization
+    weight_decay: 1.0e-5
+    clip_grad_norm: 1.0

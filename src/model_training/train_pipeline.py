@@ -41,7 +41,7 @@ def load_and_prepare_data(config):
 
     print(f'\nFeatures before engineering: \n{base_features}\n')
 
-    feat_cfg = config['feature_engineering']
+    feat_cfg = config['ml_pipeline']['feature_engineering']
     timestep_hours = config['data']['timestep_duration_hours']
 
     # number of features with just lag would be: len(lag_features) * num_lags * 2 (for lag and diff)
@@ -65,24 +65,39 @@ def load_and_prepare_data(config):
         roll_features = [c for c in base_features if c not in exclude_rolling]
         
         print(f"engineering rolling statistics for windows: {rolling_windows}h...")
-        grouped = df.groupby('stay_id')[roll_features]
+        
+        # cast to float32 before any rolling (halves RAM)
+        df[roll_features] = df[roll_features].astype('float32')
+
+        all_rolled = []  # collect outside loop, single join at the end
+
+        grouped = df.groupby('stay_id', sort=False)[roll_features]
         
         for rh in rolling_windows:
             # mathematically map desired real time (yaml hours) directly into sequential steps
             window_steps = max(1, int(rh / timestep_hours))
-            
-            rolled = grouped.rolling(window=window_steps, min_periods=1).agg(['mean', 'std', 'max', 'min'])
-            
-            # flatten multi-index columns
-            rolled.columns = [f"{col}_{stat}_{rh}h" for col, stat in rolled.columns]
-            
-            # drop the extra stay_id index level from groupby
-            rolled = rolled.reset_index(level=0, drop=True)
-            
-            std_cols = [c for c in rolled.columns if f'_std_{rh}h' in c]
-            rolled[std_cols] = rolled[std_cols].fillna(0)
+            roller = grouped.rolling(window=window_steps, min_periods=1)
 
-            df = df.join(rolled)
+            # compute each stat separately
+            stats = {
+                'mean': roller.mean(),
+                'std':  roller.std().fillna(0),
+                'max':  roller.max(),
+                'min':  roller.min(),
+            }
+
+            parts = []
+            for stat_name, stat_df in stats.items():
+                stat_df.columns = [f"{c}_{stat_name}_{rh}h" for c in roll_features]
+                stat_df = stat_df.reset_index(level=0, drop=True)
+                parts.append(stat_df)
+                del stat_df 
+
+            all_rolled.append(pd.concat(parts, axis=1))
+            del parts, stats
+
+        df = df.join(pd.concat(all_rolled, axis=1))
+        del all_rolled
 
     # early warning prediction horizon generation
     targets = []
@@ -178,9 +193,9 @@ def evaluate_model(y_true, y_probs, name="Model"):
 def optimise_and_train(model_name, config, X_train, y_train, X_val, y_val):
     """safely bridge independent optuna runs and mlflow tracking loops cleanly for injected model."""
     print(f"\nRunning optimisation for {model_name.upper()}...")
-    opt_config = config['optimisation']
+    opt_config = config['ml_pipeline']['optimisation']
     sys_config = config['system']
-    model_config = config['models'][model_name]
+    model_config = config['ml_pipeline']['models'][model_name]
     search_space = model_config['search_space']
 
     def objective(trial):
@@ -188,7 +203,7 @@ def optimise_and_train(model_name, config, X_train, y_train, X_val, y_val):
         for p_name, p_space in search_space.items():
             kwargs[p_name] = suggest_param(trial, p_name, p_space)
 
-        kwargs['random_state'] = config['split']['random_state']
+        kwargs['random_state'] = config['experiment']['random_state']
         kwargs['n_jobs'] = sys_config['n_jobs']
 
         if model_name.lower() == 'lightgbm':
@@ -210,7 +225,7 @@ def optimise_and_train(model_name, config, X_train, y_train, X_val, y_val):
     
     # securely map optimums directly to the final production model refit
     best_kwargs = study.best_params.copy()
-    best_kwargs['random_state'] = config['split']['random_state']
+    best_kwargs['random_state'] = config['experiment']['random_state']
     best_kwargs['n_jobs'] = sys_config['n_jobs']
 
     if model_name.lower() == 'lightgbm':
@@ -218,8 +233,8 @@ def optimise_and_train(model_name, config, X_train, y_train, X_val, y_val):
     elif model_name.lower() == 'xgboost':
         best_kwargs.update({'objective': 'binary:logistic', 'eval_metric': 'aucpr'})
 
-    mlflow.log_params({f"{model_name}_{k}": v for k, v in best_kwargs.items()})
-    mlflow.log_metric(f"{model_name}_best_val_auprc", study.best_value)
+    mlflow.log_params(best_kwargs)
+    mlflow.log_metric("best_val_auprc", study.best_value)
 
     final_model = get_model(model_name, best_kwargs)
     final_model = fit_model(model_name, final_model, X_train, y_train, X_val, y_val)
@@ -237,7 +252,7 @@ def explain_model(model, X_test, output_dir, model_name="model"):
     plt.figure(figsize=(10, 8))
     shap.summary_plot(shap_values, X_sample, show=False)
     plt.tight_layout()
-    file_path = os.path.join(output_dir, f"shap_summary_beeswarm_{model_name}.png")
+    file_path = os.path.join(output_dir, f"shap_beeswarm.png")
     plt.savefig(file_path)
     plt.close()
 
@@ -260,10 +275,10 @@ def main():
     stay_ids = patient_outcomes['stay_id'].values
     y_patient = patient_outcomes['target'].values
 
-    trn_split = config['split']['train_frac']
-    val_split = config['split']['val_frac']
-    tst_split = config['split']['test_frac']
-    rnd_state = config['split']['random_state']
+    trn_split = config['data']['split']['train_frac']
+    val_split = config['data']['split']['val_frac']
+    tst_split = config['data']['split']['test_frac']
+    rnd_state = config['experiment']['random_state']
 
     ids_train, ids_tmp, y_train, y_tmp = train_test_split(
         stay_ids, y_patient, stratify=y_patient, test_size=(val_split + tst_split), random_state=rnd_state
@@ -286,10 +301,10 @@ def main():
     X_val, y_val = df_val[features], df_val['target']
     X_test, y_test = df_test[features], df_test['target']
 
-    artifact_dir = config['system'].get('artifact_dir', 'artifacts_pipeline')
+    artifact_dir = config['system'].get('artifact_dir', 'artifacts')
     os.makedirs(artifact_dir, exist_ok=True)
 
-    models_to_run = [m for m, cfg in config['models'].items() if cfg.get('run', False)]
+    models_to_run = [m for m, cfg in config['ml_pipeline']['models'].items() if cfg.get('run', False)]
     
     if not models_to_run:
         print("No models were set directly to 'run: true' inside your config.yaml.")
@@ -297,9 +312,9 @@ def main():
 
     # suffix based on engineered variables
     modifier_parts = []
-    if config['feature_engineering']['use_lags']:
+    if config['ml_pipeline']['feature_engineering']['use_lags']:
         modifier_parts.append("Lags")
-    if config['feature_engineering']['use_rolling']:
+    if config['ml_pipeline']['feature_engineering']['use_rolling']:
         modifier_parts.append("Roll")
     modifier = "_".join(modifier_parts) if modifier_parts else "Base"
 
@@ -314,8 +329,9 @@ def main():
         
         with mlflow.start_run(run_name=f"{model_name.upper()}_Execution"):
             # snapshot the exact engineering toggles used
-            mlflow.log_param("use_lags", config['feature_engineering']['use_lags'])
-            mlflow.log_param("use_rolling", config['feature_engineering']['use_rolling'])
+            mlflow.log_param("model_type", model_name.upper())
+            mlflow.log_param("use_lags", config['ml_pipeline']['feature_engineering']['use_lags'])
+            mlflow.log_param("use_rolling", config['ml_pipeline']['feature_engineering']['use_rolling'])
             mlflow.log_param("total_features_used", len(features))
 
             final_model = optimise_and_train(model_name, config, X_train, y_train, X_val, y_val)
@@ -324,10 +340,13 @@ def main():
             y_probs = final_model.predict_proba(X_test)[:, 1]
             metrics = evaluate_model(y_test, y_probs, f"{model_name.upper()} Test Performance")
 
-            mlflow.log_metric(f"{model_name}_test_auprc", metrics['auprc'])
-            mlflow.log_metric(f"{model_name}_test_auroc", metrics['auroc'])
-            mlflow.log_metric(f"{model_name}_test_f1", metrics['f1'])
+            mlflow.log_metric("test_auprc", metrics['auprc'])
+            mlflow.log_metric("test_auroc", metrics['auroc'])
+            mlflow.log_metric("test_f1", metrics['f1'])
 
+            
+            curr_artifact_dir = os.path.join(artifact_dir, model_name.lower())
+            os.makedirs(curr_artifact_dir, exist_ok=True)
             # visually export the uncalibrated raw probabilistic curve
             prob_true, prob_pred = calibration_curve(y_test, y_probs, n_bins=10)
             plt.figure(figsize=(6, 6))
@@ -337,21 +356,21 @@ def main():
             plt.ylabel("Fraction of Positives")
             plt.title(f"Clinical Reliability Trace ({model_name.upper()})")
             plt.legend()
-            
-            calib_path = os.path.join(artifact_dir, f"calibration_{model_name}.png")
+
+            calib_path = os.path.join(curr_artifact_dir, f"calibration_curve.png")
             plt.savefig(calib_path)
             plt.close()
             mlflow.log_artifact(calib_path)
 
             # trigger explanation module natively inside the evaluation loop
-            explain_model(final_model, X_test, artifact_dir, model_name)
+            explain_model(final_model, X_test, curr_artifact_dir, model_name)
             
             # send artifacts to mlflow's remote storage backend
-            if os.path.exists(os.path.join(artifact_dir, f"shap_summary_beeswarm_{model_name}.png")):
-                mlflow.log_artifact(os.path.join(artifact_dir, f"shap_summary_beeswarm_{model_name}.png"))
+            if os.path.exists(os.path.join(artifact_dir, f"shap_beeswarm.png")):
+                mlflow.log_artifact(os.path.join(artifact_dir, f"shap_beeswarm.png"))
 
             if config['system'].get('save_models', False):
-                model_save_path = os.path.join(artifact_dir, f"best_{model_name}.pkl")
+                model_save_path = os.path.join(curr_artifact_dir, f"best_{model_name}.pkl")
                 joblib.dump(final_model, model_save_path)
                 mlflow.log_artifact(model_save_path)
                 print(f"Model saved to {model_save_path}")

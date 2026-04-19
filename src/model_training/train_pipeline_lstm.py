@@ -57,10 +57,10 @@ def grouped_stratified_split(df, config):
     """
     partition dataset strictly by individual stay_id to guarantee no data leakage across splits.
     """
-    train_frac = config['split']['train_frac']
-    val_frac = config['split']['val_frac']
-    test_frac = config['split']['test_frac']
-    rnd_state = config['split']['random_state']
+    train_frac = config['data']['split']['train_frac']
+    val_frac = config['data']['split']['val_frac']
+    test_frac = config['data']['split']['test_frac']
+    rnd_state = config['experiment']['random_state']
 
     patient_outcomes = df.groupby('stay_id')['target'].max().reset_index()
     stay_ids = patient_outcomes['stay_id'].values
@@ -181,7 +181,7 @@ def main():
     config = load_config(config_path)
 
     # check if lstm is enabled
-    lstm_config = config.get('models', {}).get('lstm', {})
+    lstm_config = config.get('lstm_pipeline', {})
     if not lstm_config.get('run', False):
         print("LSTM is disabled in config.yaml.")
         return
@@ -191,7 +191,8 @@ def main():
     exp_base = config['experiment']['base_name']
     mlflow.set_experiment(f"{exp_base}_LSTM")
     
-    artifact_dir = config['system'].get('artifact_dir', 'artifacts_pipeline')
+    artifact_dir = config['system'].get('artifact_dir', 'artifacts')
+    artifact_dir = os.path.join(artifact_dir, "lstm")
     os.makedirs(artifact_dir, exist_ok=True)
     
     avail_cores = os.cpu_count() or 1
@@ -261,7 +262,7 @@ def main():
         mlflow.log_params(lstm_params)
         mlflow.log_param("model_type", "LSTM")
         
-        model_save_path = os.path.join(artifact_dir, "best_lstm.pth")
+        model_save_path = os.path.join(artifact_dir, "lstm.pth")
         
         print("\nStarting LSTM Training...")
         for epoch in tqdm(range(epochs), desc="Epochs"):
@@ -348,7 +349,7 @@ def main():
         plt.ylabel("Fraction of Positives")
         plt.title("Calibration Curve (LSTM Reliability)")
         plt.legend()
-        calib_path = os.path.join(artifact_dir, "calibration_curve_lstm.png")
+        calib_path = os.path.join(artifact_dir, "calibration_curve.png")
         plt.savefig(calib_path)
         plt.close()
         mlflow.log_artifact(calib_path)
