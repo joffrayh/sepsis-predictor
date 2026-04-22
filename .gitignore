@@ -11,7 +11,7 @@ wheels/
 
 
 # Data
-data/
+/data/
 
 # testing environment
 test/
