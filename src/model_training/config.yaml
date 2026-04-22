@@ -1,9 +1,10 @@
 experiment:
   base_name: "Sepsis_Prediction"
+  active_model: "lightgbm"
   random_state: 42
 
 data:
-  path: "data/processed_files/patient_timeseries_with_features.parquet"
+  path: "../../data/processed_files/patient_timeseries_with_features.parquet"
   target_window: 3
   target_horizon: 1
   timestep_duration_hours: 4
@@ -18,9 +19,9 @@ system:
   artifact_dir: "artifacts"
   save_models: true
 
-ml_pipeline:
+tabular:
   feature_engineering:
-    use_lags: false
+    use_lags: true
     num_lags: 3
     lag_exclude_cols:
       - "gender"
@@ -31,9 +32,8 @@ ml_pipeline:
       - "hours_since_creatinine"
       - "hours_since_platelets"
 
-    use_rolling: false
-    # window sizes in actual hours
-    rolling_windows_hours: [8, 16]
+    use_rolling: true
+    rolling_windows_hours: [8, 16] # window sizes in actual hours
     rolling_exclude_cols:
       - "gender"
       - "age"
@@ -44,11 +44,10 @@ ml_pipeline:
       - "hours_since_platelets"
 
   optimisation:
-    num_trials: 1
+    num_trials: 20
 
   models:
     lightgbm:
-      run: true
       search_space:
         learning_rate: [0.005, 0.05, "log"]
         num_leaves: [3, 10, "int"]
@@ -62,7 +61,6 @@ ml_pipeline:
         n_estimators: [100, 600, "int"]
         
     xgboost:
-      run: true
       search_space:
         learning_rate: [0.005, 0.05, "log"]
         max_depth: [2, 4, "int"]
@@ -75,19 +73,19 @@ ml_pipeline:
         gamma: [0.0, 10.0, "float"]
         n_estimators: [100, 600, "int"]
 
-lstm_pipeline:
-  run: true
-  params:
-    batch_size: 256
-    epochs: 1
-    learning_rate: 0.001
-    patience: 4
-    # Model Architecture
-    hidden_dim: 64
-    num_layers: 2
-    dropout: 0.2
-    num_heads: 4
-    fc_dim: 32
-    # Regularization
-    weight_decay: 1.0e-5
-    clip_grad_norm: 1.0
+sequence:
+  lstm:
+    params:
+      batch_size: 256
+      epochs: 20
+      learning_rate: 0.001
+      patience: 4
+      # model architecture
+      hidden_dim: 64
+      num_layers: 2
+      dropout: 0.2
+      num_heads: 4
+      fc_dim: 32
+      # regularisation
+      weight_decay: 1.0e-5
+      clip_grad_norm: 1.0
