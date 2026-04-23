@@ -3,6 +3,15 @@ experiment:
   active_model: "lstm"
   random_state: 42
 
+system:
+  # for sequence models, this is set automatically in the BaseSequenceModel
+  # for tabular models, this should be set by user in the fit_model method (see lightgbm_model.py for example) 
+  n_jobs: -1 
+
+  # device to use, set by the BaseSepsisModel (self.device), accessible by all inherited models.
+  # see lstm_model.py for example of how it can be used.
+  device: "cpu"
+
 data:
   path: "data/processed_files/patient_timeseries_with_features.parquet"
   target_window: 3
@@ -13,9 +22,6 @@ data:
     train_frac: 0.70
     val_frac: 0.15
     test_frac: 0.15
-
-system:
-  n_jobs: -1
 
 tabular:
   feature_engineering:

@@ -7,6 +7,7 @@ class BaseSepsisModel(ABC):
         self.model_params = model_params
         self.features = features
         self.model = None
+        self.device = config.get('system', {}).get('device', None)
 
     @abstractmethod
     def build_and_train(self, df_train, df_val):
@@ -85,15 +86,14 @@ class BaseSequenceModel(BaseSepsisModel):
         
         # retrieve dynamic configs, fallback naturally to 256 and optimal cores
         batch_size = self.model_params.get('params', {}).get('batch_size', 256)
-        avail_cores = os.cpu_count() or 1
-        num_cores = self.config['system'].get('n_jobs', avail_cores)
-        num_cores = avail_cores if num_cores < 0 else num_cores
-        workers = min(8, num_cores)
+        n_jobs = self.config['system'].get('n_jobs', 1)
+        if n_jobs < 0:
+            n_jobs = os.cpu_count() or 1
         
-        torch.set_num_threads(num_cores)
+        torch.set_num_threads(n_jobs)
         
-        train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, collate_fn=collate_sequences, num_workers=workers, prefetch_factor=2)
-        val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, collate_fn=collate_sequences, num_workers=workers)
+        train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, collate_fn=collate_sequences, num_workers=n_jobs, prefetch_factor=2)
+        val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, collate_fn=collate_sequences, num_workers=n_jobs)
         
         self.fit_model(train_loader, val_loader, df_train_scaled)
 
@@ -110,9 +110,8 @@ class BaseSequenceModel(BaseSepsisModel):
         n_jobs = self.config['system'].get('n_jobs', 1)
         if n_jobs < 0:
             n_jobs = os.cpu_count() or 1
-        workers = min(8, n_jobs)        
 
-        test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, collate_fn=collate_sequences, num_workers=workers)
+        test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, collate_fn=collate_sequences, num_workers=n_jobs)
         
         return self.predict_model(test_loader)
 

@@ -42,8 +42,7 @@ class LSTMModelWrapper(BaseSequenceModel):
         super().__init__(config, model_params, features)
         self.lstm_params = model_params.get('params', {})
         self.model = None
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        
+                
     def fit_model(self, train_loader, val_loader, df_train_scaled):
         
         self.model = SepsisLSTM(
