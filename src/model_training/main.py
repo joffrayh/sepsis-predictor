@@ -9,10 +9,8 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from src.model_training.data.loader import load_and_prepare_data, grouped_stratified_split
-from src.model_training.data.sequence_utils import SepsisSequenceDataset, collate_sequences
 from src.model_training.models.factory import get_model
-from src.model_training.utils.metrics import evaluate_model, plot_calibration_curve
-from src.model_training.train_pipeline import explain_model
+from src.model_training.utils.metrics import evaluate_model, plot_calibration_curve, plot_pr_curve, plot_roc_curve
 
 def load_config(args_config) -> dict:
     config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), args_config))
@@ -101,6 +99,12 @@ def main():
         # extracting learning features natively dynamically available
         drop_cols = ['stay_id', 'timestep', 'sepsis', 'target']
         train_features = [c for c in df_train.columns if c not in drop_cols]
+        
+        # log counts
+        mlflow.log_metric("train_samples", len(df_train))
+        mlflow.log_metric("val_samples", len(df_val))
+        mlflow.log_metric("test_samples", len(df_test))
+        mlflow.log_metric("feature_count", len(train_features))
 
         # training the model
         model_wrapper = get_model(active_model, config, model_cfg, train_features)
@@ -118,6 +122,14 @@ def main():
         calib_fig = plot_calibration_curve(y_test, y_probs, active_model.upper())
         mlflow.log_figure(calib_fig, f"calibration_curve_{active_model.lower()}.png")
         plt.close(calib_fig)
+
+        pr_fig = plot_pr_curve(y_test, y_probs, active_model.upper())
+        mlflow.log_figure(pr_fig, f"pr_curve_{active_model.lower()}.png")
+        plt.close(pr_fig)
+
+        roc_fig = plot_roc_curve(y_test, y_probs, active_model.upper())
+        mlflow.log_figure(roc_fig, f"roc_curve_{active_model.lower()}.png")
+        plt.close(roc_fig)
 
         model_wrapper.custom_func(df_train, df_val, df_test, y_test, y_probs)
 

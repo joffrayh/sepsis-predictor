@@ -2,7 +2,7 @@ import numpy as np
 import os
 import shap
 import matplotlib.pyplot as plt
-from sklearn.metrics import average_precision_score, roc_auc_score, recall_score, precision_recall_curve, precision_score
+from sklearn.metrics import average_precision_score, roc_auc_score, recall_score, precision_recall_curve, precision_score, roc_curve
 from sklearn.calibration import calibration_curve
 
 def evaluate_model(y_true, y_probs, name="Model", threshold=None):
@@ -39,6 +39,31 @@ def plot_calibration_curve(y_true, y_probs, model_name="Model"):
     plt.xlabel("Mean Predicted Probability")
     plt.ylabel("Fraction of Positives")
     plt.title(f"Clinical Reliability Trace ({model_name})")
+    plt.legend()
+    plt.tight_layout()
+    return fig
+
+def plot_pr_curve(y_true, y_probs, model_name="Model"):
+    precs, recs, _ = precision_recall_curve(y_true, y_probs)
+    auprc = average_precision_score(y_true, y_probs)
+    fig = plt.figure(figsize=(6, 6))
+    plt.plot(recs, precs, label=f'{model_name} (AUPRC = {auprc:.2f})')
+    plt.xlabel('Recall')
+    plt.ylabel('Precision')
+    plt.title(f'Precision-Recall Curve ({model_name})')
+    plt.legend()
+    plt.tight_layout()
+    return fig
+
+def plot_roc_curve(y_true, y_probs, model_name="Model"):
+    fpr, tpr, _ = roc_curve(y_true, y_probs)
+    auroc = roc_auc_score(y_true, y_probs)
+    fig = plt.figure(figsize=(6, 6))
+    plt.plot(fpr, tpr, label=f'{model_name} (AUROC = {auroc:.2f})')
+    plt.plot([0, 1], [0, 1], linestyle='--', color='gray')
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title(f'ROC Curve ({model_name})')
     plt.legend()
     plt.tight_layout()
     return fig

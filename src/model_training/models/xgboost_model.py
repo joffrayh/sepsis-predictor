@@ -68,6 +68,9 @@ class XGBoostWrapper(BaseTabularModel):
             eval_set=[(X_val, y_val)],
             verbose=False
         )
+        
+        if hasattr(self.model, 'best_iteration'):
+            mlflow.log_metric("best_iteration", self.model.best_iteration)
 
     def predict_model(self, X_test):
         y_probs = self.model.predict_proba(X_test)[:, 1]

@@ -66,6 +66,9 @@ class LightGBMWrapper(BaseTabularModel):
             eval_set=[(X_val, y_val)],
             callbacks=[lgb.early_stopping(stopping_rounds=30, verbose=False)]
         )
+        
+        if hasattr(self.model, 'best_iteration_'):
+            mlflow.log_metric("best_iteration", self.model.best_iteration_)
 
     def predict_model(self, X_test):
         y_probs = self.model.predict_proba(X_test)[:, 1]
