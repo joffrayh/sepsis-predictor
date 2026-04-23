@@ -1,14 +1,12 @@
 import os
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
 import numpy as np
 from tqdm import tqdm
 import mlflow
-from sklearn.preprocessing import StandardScaler
+import mlflow.pytorch
 from sklearn.metrics import average_precision_score
-from .base_model import BaseSepsisModel
-from ..data.sequence_utils import SepsisSequenceDataset, collate_sequences
+from .base_model import BaseSequenceModel
 
 class SepsisLSTM(nn.Module):
     def __init__(self, input_dim, hidden_dim=64, num_layers=2, dropout=0.2, num_heads=4, fc_dim=32):
@@ -38,33 +36,15 @@ class SepsisLSTM(nn.Module):
         logits = self.classifier(lstm_out).squeeze(-1)
         return logits
 
-class LSTMModelWrapper(BaseSepsisModel):
+
+class LSTMModelWrapper(BaseSequenceModel):
     def __init__(self, config, model_params, features):
         super().__init__(config, model_params, features)
         self.lstm_params = model_params.get('params', {})
-        self.scaler = None
         self.model = None
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
-    def build_and_train(self, df_train, df_val):
-        
-        print("Scaling features using StandardScaler...")
-        self.scaler = StandardScaler()
-        df_train[self.features] = self.scaler.fit_transform(df_train[self.features])
-        df_val[self.features] = self.scaler.transform(df_val[self.features])
-        
-        train_ds = SepsisSequenceDataset(df_train, self.features)
-        val_ds = SepsisSequenceDataset(df_val, self.features)
-        
-        batch_size = self.lstm_params.get('batch_size', 256)
-        avail_cores = os.cpu_count() or 1
-        num_cores = self.config['system'].get('n_jobs', avail_cores)
-        num_cores = avail_cores if num_cores < 0 else num_cores
-        workers = min(8, num_cores)
-        
-        torch.set_num_threads(num_cores)
-        train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, collate_fn=collate_sequences, num_workers=workers, prefetch_factor=2)
-        val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, collate_fn=collate_sequences, num_workers=workers)
+    def fit_model(self, train_loader, val_loader, df_train_scaled):
         
         self.model = SepsisLSTM(
             input_dim=len(self.features), 
@@ -75,8 +55,8 @@ class LSTMModelWrapper(BaseSepsisModel):
             fc_dim=self.lstm_params.get('fc_dim', 32)
         ).to(self.device)
         
-        num_pos = df_train['target'].sum()
-        num_neg = len(df_train) - num_pos
+        num_pos = df_train_scaled['target'].sum()
+        num_neg = len(df_train_scaled) - num_pos
         pos_weight = torch.tensor([num_neg / num_pos], dtype=torch.float32).to(self.device)
         
         criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight, reduction='none')
@@ -143,13 +123,7 @@ class LSTMModelWrapper(BaseSepsisModel):
         self.model.load_state_dict(torch.load(temp_model_path))
         os.remove(temp_model_path)
 
-    def predict_proba(self, df_test):
-        df_test_scaled = df_test.copy()
-        df_test_scaled[self.features] = self.scaler.transform(df_test[self.features])
-        
-        test_ds = SepsisSequenceDataset(df_test_scaled, self.features)
-        test_loader = DataLoader(test_ds, batch_size=self.lstm_params.get('batch_size', 256), shuffle=False, collate_fn=collate_sequences, num_workers=min(8, self.config['system'].get('n_jobs', 1)))
-        
+    def predict_model(self, test_loader):
         self.model.eval()
         test_preds = []
         test_targets = []
@@ -162,8 +136,23 @@ class LSTMModelWrapper(BaseSepsisModel):
                 test_targets.append(y_b[valid_idx].numpy())
                 
         return np.concatenate(test_preds), np.concatenate(test_targets)
-        
-    def save_model(self, model_name):
-        import mlflow.pytorch
-        mlflow.pytorch.log_model(self.model, name=model_name)
 
+    def save_model(self, model_name):
+        from mlflow.types.schema import Schema, TensorSpec
+        from mlflow.models.signature import ModelSignature
+
+        input_schema = Schema([TensorSpec(np.dtype(np.float32), (-1, -1, len(self.features)))])
+        signature = ModelSignature(inputs=input_schema)
+
+        dummy_input = torch.zeros(1, 1, len(self.features)).to(self.device)
+        mlflow.pytorch.log_model(
+            self.model,
+            name=model_name,
+            serialization_format='pickle',
+            input_example=dummy_input,
+            signature=signature
+        )
+
+
+    def custom_func(self, df_train, df_val, df_test, y_test, y_probs):
+        pass

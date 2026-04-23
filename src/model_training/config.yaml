@@ -1,10 +1,10 @@
 experiment:
   base_name: "Sepsis_Prediction"
-  active_model: "lightgbm"
+  active_model: "lstm"
   random_state: 42
 
 data:
-  path: "../../data/processed_files/patient_timeseries_with_features.parquet"
+  path: "data/processed_files/patient_timeseries_with_features.parquet"
   target_window: 3
   target_horizon: 1
   timestep_duration_hours: 4
@@ -16,12 +16,10 @@ data:
 
 system:
   n_jobs: -1
-  artifact_dir: "artifacts"
-  save_models: true
 
 tabular:
   feature_engineering:
-    use_lags: true
+    use_lags: false
     num_lags: 3
     lag_exclude_cols:
       - "gender"
@@ -32,7 +30,7 @@ tabular:
       - "hours_since_creatinine"
       - "hours_since_platelets"
 
-    use_rolling: true
+    use_rolling: false
     rolling_windows_hours: [8, 16] # window sizes in actual hours
     rolling_exclude_cols:
       - "gender"
@@ -44,7 +42,7 @@ tabular:
       - "hours_since_platelets"
 
   optimisation:
-    num_trials: 20
+    num_trials: 1
 
   models:
     lightgbm:
@@ -77,7 +75,7 @@ sequence:
   lstm:
     params:
       batch_size: 256
-      epochs: 20
+      epochs: 1
       learning_rate: 0.001
       patience: 4
       # model architecture

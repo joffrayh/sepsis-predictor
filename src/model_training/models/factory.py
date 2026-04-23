@@ -1,8 +1,8 @@
 
-from model_training.models.base_model import BaseSepsisModel
+from src.model_training.models.base_model import BaseSepsisModel
 
 MODEL_REGISTRY = {}
-
+\
 def get_model(model_name, config, model_params, features) -> BaseSepsisModel:
     # Support XGBoost and LSTM lazily to avoid unused imports
     if model_name == "xgboost" and "xgboost" not in MODEL_REGISTRY:

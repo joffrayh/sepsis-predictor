@@ -1,12 +1,13 @@
-import numpy as np
 import optuna
 import mlflow
+import mlflow.xgboost
 import xgboost as xgb
-import joblib
+import matplotlib.pyplot as plt
 from sklearn.metrics import average_precision_score
-from .base_model import BaseSepsisModel
+from .base_model import BaseTabularModel
+from src.model_training.custom_funcs.custom_plots import shap_explanations
 
-class XGBoostWrapper(BaseSepsisModel):
+class XGBoostWrapper(BaseTabularModel):
     def __init__(self, config, model_params, features):
         super().__init__(config, model_params, features)
         self.search_space = model_params.get('search_space', {})
@@ -24,10 +25,7 @@ class XGBoostWrapper(BaseSepsisModel):
         else:
             raise ValueError(f"param type '{p_type}' not understood.")
 
-    def build_and_train(self, df_train, df_val):
-        
-        X_train, y_train = df_train[self.features], df_train['target']
-        X_val, y_val = df_val[self.features], df_val['target']
+    def fit_model(self, X_train, y_train, X_val, y_val):
         
         opt_config = self.config.get('tabular', {}).get('optimisation', {})
         sys_config = self.config['system']
@@ -71,26 +69,15 @@ class XGBoostWrapper(BaseSepsisModel):
             verbose=False
         )
 
-    def predict_proba(self, df_test):
-        y_probs = self.model.predict_proba(df_test[self.features])[:, 1]
-        y_test = df_test['target'].values
-        return y_probs, y_test
+    def predict_model(self, X_test):
+        y_probs = self.model.predict_proba(X_test)[:, 1]
+        return y_probs
         
     def save_model(self, model_name):
-        import mlflow.xgboost
-        mlflow.xgboost.log_model(self.model, artifact_path=model_name)
+        boost_model = self.model.get_booster()
+        mlflow.xgboost.log_model(boost_model, name=model_name)
 
-    def get_custom_plots(self, df_test):
-        plots = {}
-        print(f"\nGenerating SHAP explanations for XGBoost...")
-
-        explainer = shap.TreeExplainer(model)
-        X_sample = X_test.sample(n=min(2000, len(X_test)), random_state=42)
-        shap_values = explainer.shap_values(X_sample)
-        
-        fig = plt.figure(figsize=(10, 8))
-        shap.summary_plot(shap_values, X_sample, show=False)
-        plt.tight_layout()
-        if shap_fig is not None:
-            plots["shap_beeswarm"] = shap_fig
-        return plots
+    def custom_func(self, df_train, df_val, df_test, y_test, y_probs):
+        shap_fig = shap_explanations(self.model, df_test[self.features])
+        mlflow.log_figure(shap_fig, "custom_plots/shap_summary_plot.png")
+        plt.close(shap_fig)

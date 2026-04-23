@@ -29,10 +29,10 @@ def evaluate_model(y_true, y_probs, name="Model", threshold=None):
     print(f"\tPrecision: {precision:.4f}")
     print(f"\tRecall: {recall:.4f}")
 
-    return {'auprc': auprc, 'auroc': auroc, 'f1': f1, 'threshold': threshold}
+    return {'auprc': auprc, 'auroc': auroc, 'f1': f1, 'best_f1_threshold': threshold}
 
 def plot_calibration_curve(y_true, y_probs, model_name="Model"):
-    prob_true, prob_pred = calibration_curve(y_true, y_probs, n_bins=len)
+    prob_true, prob_pred = calibration_curve(y_true, y_probs, n_bins=10)
     fig = plt.figure(figsize=(6, 6))
     plt.plot(prob_pred, prob_true, marker='o', label=model_name)
     plt.plot([0, 1], [0, 1], linestyle='--', label="Perfectly Calibrated")

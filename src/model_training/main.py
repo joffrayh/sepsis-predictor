@@ -1,12 +1,18 @@
 import os
+import sys
+from pathlib import Path
+
 import argparse
 import yaml
 import mlflow
 import matplotlib.pyplot as plt
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from src.model_training.data.loader import load_and_prepare_data, grouped_stratified_split
 from src.model_training.data.sequence_utils import SepsisSequenceDataset, collate_sequences
 from src.model_training.models.factory import get_model
-from src.model_training.utils.metrics import evaluate_model, explain_model, plot_calibration_curve
+from src.model_training.utils.metrics import evaluate_model, plot_calibration_curve
+from src.model_training.train_pipeline import explain_model
 
 def load_config(args_config) -> dict:
     config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), args_config))
