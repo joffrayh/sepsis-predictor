@@ -1,8 +1,8 @@
 import shap
 import matplotlib.pyplot as plt
 
-def shap_explanations(model, X_test):
-    print(f"\nGenerating SHAP explanations for XGBoost...")
+def shap_explanations(model, X_test, model_name):
+    print(f"\nGenerating SHAP explanations for {model_name}...")
 
     explainer = shap.TreeExplainer(model)
     X_sample = X_test.sample(n=min(2000, len(X_test)), random_state=42)

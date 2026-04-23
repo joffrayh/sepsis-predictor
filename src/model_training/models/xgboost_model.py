@@ -81,6 +81,6 @@ class XGBoostWrapper(BaseTabularModel):
         mlflow.xgboost.log_model(boost_model, name=model_name)
 
     def custom_func(self, df_train, df_val, df_test, y_test, y_probs):
-        shap_fig = shap_explanations(self.model, df_test[self.features])
+        shap_fig = shap_explanations(self.model, df_test[self.features], "XGBoost")
         mlflow.log_figure(shap_fig, "custom_plots/shap_summary_plot.png")
         plt.close(shap_fig)
