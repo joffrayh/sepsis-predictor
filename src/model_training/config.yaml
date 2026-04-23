@@ -35,7 +35,11 @@ tabular:
       - "hours_since_wbc"
       - "hours_since_creatinine"
       - "hours_since_platelets"
-
+      - "lactate_measured" 
+      - "wbc_measured"
+      - "creatinine_measured"
+      - "platelets_measured"
+    
     use_rolling: false
     rolling_windows_hours: [8, 16] # window sizes in actual hours
     rolling_exclude_cols:
@@ -46,6 +50,10 @@ tabular:
       - "hours_since_wbc"
       - "hours_since_creatinine"
       - "hours_since_platelets"
+      - "lactate_measured"  
+      - "wbc_measured"
+      - "creatinine_measured"
+      - "platelets_measured"
 
   optimisation:
     num_trials: 1
