@@ -1,15 +1,19 @@
+import xgboost as xgb
 import shap
 import matplotlib.pyplot as plt
 import pickle
+import mlflow.xgboost
 import numpy as np
 import pandas as pd
 import streamlit as st
+from sklearn.calibration import calibration_curve
+from sklearn.metrics import average_precision_score, roc_auc_score
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-# ── Config ─────────────────────────────────────────────────────────────────────
-MODEL_PATH = "/home/joffray/repos/uni/dissertation/code/mlruns/5/0be7d597c6084dac8e93d27cdde56c1a/artifacts/best_xgboost.pkl"
-DATA_PATH  = "/home/joffray/repos/uni/dissertation/code/src/demo_ui/test_set.parquet"
+# ── Config: Data & Model ───────────────────────────────────────────────────────
+DATA_PATH   = "/home/joffray/repos/uni/dissertation/code/src/demo_ui/test_set.parquet"
+MODEL_PATH  = "/home/joffray/repos/uni/dissertation/code/mlruns/5/models/m-6f94a3404987472a88730dccbc5fd81d/artifacts/"
 
 PATIENT_ID_COL     = "stay_id"
 TIME_COL           = "timestep"
@@ -18,33 +22,68 @@ N_DEMO_PATIENTS    = 5
 PREDICTION_HORIZON = 3 
 
 FEATURE_COLS = ["heart_rate", "respiratory_rate", "temp_C"]
+
+# ── Config: UI & Styling ───────────────────────────────────────────────────────
+# Fonts
+FONT_FAMILY_SANS = "'IBM Plex Sans', sans-serif"
+FONT_FAMILY_MONO = "'IBM Plex Mono', monospace"
+
+# CSS Settings
+CSS_FONT_BASE       = "1rem"
+CSS_FONT_METRIC_VAL = "1.8rem"
+CSS_FONT_METRIC_LBL = "0.7rem"
+CSS_FONT_PATIENT_HDR= "0.75rem"
+
+# Plotly Font Sizes
+PLOT_FONT_MAIN       = 30
+PLOT_FONT_TICKS      = 30
+PLOT_FONT_ANNOTATION = 30
+PLOT_FONT_CALIB      = 11
+
+# Colors
+COLOR_BG_MAIN    = "#0d1117"
+COLOR_BG_CARD    = "#161b22"
+COLOR_TEXT_MAIN  = "#e6edf3"
+COLOR_TEXT_MUTED = "#8b949e"
+COLOR_GRID       = "#21262d"
+
+COLOR_RISK_HIGH  = "#ff4d4f"
+COLOR_RISK_MED   = "#faad14"
+COLOR_RISK_LOW   = "#52c41a"
+COLOR_INFO       = "#58a6ff"
+
+FEATURE_COLORS   = ["#58a6ff", "#3fb950", "#d2a8ff", "#ffa657", "#79c0ff", "#56d364"]
+# --- Near your other Config constants ---
+FAKE_NAMES = [
+    "James", "Maria", "Robert", "Sarah", 
+    "Amina Yusuf", "David Miller", "Elena Rossi", "Liam O'Connor"
+]
+
 # ───────────────────────────────────────────────────────────────────────────────
 
 st.set_page_config(page_title="Sepsis Risk Monitor", page_icon="🏥", layout="wide")
 
-# (CSS Styling remains the same as your original)
-st.markdown("""
+st.markdown(f"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@300;400;600&display=swap');
-html, body, [class*="css"] { font-family: 'IBM Plex Sans', sans-serif; background-color: #0d1117; color: #e6edf3; }
-.main { background-color: #0d1117; }
-h1, h2, h3 { font-family: 'IBM Plex Mono', monospace; }
-.metric-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 1.2rem 1.5rem; text-align: center; }
-.metric-label { font-family: 'IBM Plex Mono', monospace; font-size: 0.7rem; color: #8b949e; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 0.4rem; }
-.metric-value { font-family: 'IBM Plex Mono', monospace; font-size: 1.8rem; font-weight: 600; }
-.risk-HIGH   { color: #ff4d4f; }
-.risk-MEDIUM { color: #faad14; }
-.risk-LOW    { color: #52c41a; }
-.patient-header { font-family: 'IBM Plex Mono', monospace; font-size: 0.75rem; color: #8b949e; letter-spacing: 0.08em; margin-bottom: 0.25rem; }
-.info-box { background: #1c2333; border-left: 3px solid #388bfd; border-radius: 4px; padding: 0.75rem 1rem; font-size: 0.8rem; color: #8b949e; margin-bottom: 1rem; font-family: 'IBM Plex Mono', monospace; }
+html, body, [class*="css"] {{ font-family: {FONT_FAMILY_SANS}; background-color: {COLOR_BG_MAIN}; color: {COLOR_TEXT_MAIN}; font-size: {CSS_FONT_BASE}; }}
+.main {{ background-color: {COLOR_BG_MAIN}; }}
+h1, h2, h3 {{ font-family: {FONT_FAMILY_MONO}; }}
+.metric-card {{ background: {COLOR_BG_CARD}; border: 1px solid #30363d; border-radius: 8px; padding: 1.2rem 1.5rem; text-align: center; }}
+.metric-label {{ font-family: {FONT_FAMILY_MONO}; font-size: {CSS_FONT_METRIC_LBL}; color: {COLOR_TEXT_MUTED}; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 0.4rem; }}
+.metric-value {{ font-family: {FONT_FAMILY_MONO}; font-size: {CSS_FONT_METRIC_VAL}; font-weight: 600; }}
+.risk-HIGH   {{ color: {COLOR_RISK_HIGH}; }}
+.risk-MEDIUM {{ color: {COLOR_RISK_MED}; }}
+.risk-LOW    {{ color: {COLOR_RISK_LOW}; }}
+.patient-header {{ font-family: {FONT_FAMILY_MONO}; font-size: {CSS_FONT_PATIENT_HDR}; color: {COLOR_TEXT_MUTED}; letter-spacing: 0.08em; margin-bottom: 0.25rem; }}
+.info-box {{ background: #1c2333; border-left: 3px solid {COLOR_INFO}; border-radius: 4px; padding: 0.75rem 1rem; font-size: 0.8rem; color: {COLOR_TEXT_MUTED}; margin-bottom: 1rem; font-family: {FONT_FAMILY_MONO}; }}
 </style>
 """, unsafe_allow_html=True)
 
 # ── Load data & model ──────────────────────────────────────────────────────────
 @st.cache_resource
 def load_model():
-    with open(MODEL_PATH, "rb") as f:
-        return pickle.load(f)
+    return mlflow.xgboost.load_model(MODEL_PATH)
 
 @st.cache_data
 def load_data():
@@ -59,7 +98,7 @@ def load_data():
 @st.cache_data
 def get_predictions(_model, _df):
     f_cols = [c for c in _df.columns if c not in [PATIENT_ID_COL, TIME_COL, TARGET_COL, "sepsis"]]
-    probs = _model.predict_proba(_df[f_cols])[:, 1]
+    probs = _model.predict(xgb.DMatrix(_df[f_cols]))
     result = _df[[PATIENT_ID_COL, TIME_COL, TARGET_COL]].copy()
     result["pred_prob"] = probs
     return result, f_cols
@@ -67,6 +106,11 @@ def get_predictions(_model, _df):
 @st.cache_resource
 def get_shap_explainer(_model):
     return shap.TreeExplainer(_model)
+
+@st.cache_data
+def get_id_to_name_map(patient_ids):
+    # Zip the IDs with names; if you have more IDs than names, it will cycle
+    return {pid: FAKE_NAMES[i % len(FAKE_NAMES)] for i, pid in enumerate(patient_ids)}
 
 model = load_model()
 df = load_data()
@@ -78,9 +122,16 @@ with st.sidebar:
     st.markdown("## 🏥 Sepsis Risk Monitor")
     st.markdown("---")
     patient_ids = sorted(preds[PATIENT_ID_COL].unique())
-    selected_id = st.selectbox("Patient", options=patient_ids, format_func=lambda x: f"Patient {x}")
-    
-    # Pre-filter patient data for the slider range
+
+    # Create the mapping
+    id_to_name = get_id_to_name_map(patient_ids)
+
+# Use format_func to show the name in the UI
+    selected_id = st.selectbox(
+        "Select Patient", 
+        options=patient_ids, 
+        format_func=lambda x: id_to_name.get(x, f"Patient {x}")
+    )    
     p_preds_full = preds[preds[PATIENT_ID_COL] == selected_id].sort_values(TIME_COL)
     p_data_full  = df[df[PATIENT_ID_COL] == selected_id].sort_values(TIME_COL)
     all_times = p_preds_full[TIME_COL].values
@@ -88,88 +139,85 @@ with st.sidebar:
     st.markdown("---")
     st.markdown('<div class="patient-header">SIMULATION CONTROL</div>', unsafe_allow_html=True)
     current_t = st.select_slider("Current Simulation Hour", options=all_times, value=all_times[0])
-    
-    threshold = st.slider("Alert threshold", 0.1, 0.9, 0.5, 0.05)
-    selected_features = st.multiselect("Features to plot", options=FEATURE_COLS, default=FEATURE_COLS[:3])
+    selected_features = st.multiselect("Features to plot", options=feature_cols, default=None)
 
-# Filter data to the "Current Simulation Time"
 p_preds = p_preds_full[p_preds_full[TIME_COL] <= current_t]
 p_data  = p_data_full[p_data_full[TIME_COL] <= current_t]
 
-# Extract demographics from the first available row for this patient
-# Note: Ensure "age" and "gender" (or similar) exist in your parquet file columns
 patient_age = p_data_full['age'].iloc[0] if 'age' in p_data_full.columns else "N/A"
 patient_gender = p_data_full['gender'].iloc[0] if 'gender' in p_data_full.columns else "N/A"
-
-# Format gender for display (handling 0/1 or strings)
 gender_display = "Male" if str(patient_gender) in ['1', '1.0', 'M', 'Male'] else "Female" if str(patient_gender) in ['0', '0.0', 'F', 'Female'] else "Unknown"
 
 # ── Metrics & Logic ───────────────────────────────────────────────────────────
 peak_risk    = p_preds["pred_prob"].max()
 final_risk   = p_preds["pred_prob"].iloc[-1]
-true_outcome = int(p_preds_full[TARGET_COL].max()) # Keep overall outcome for card
-n_alerts     = int((p_preds["pred_prob"] >= threshold).sum())
+true_outcome = int(p_preds_full[TARGET_COL].max())
 
-# Sepsis Markers
 onset_rows      = p_preds_full[p_preds_full[TARGET_COL] == 1]
 first_label_t   = onset_rows[TIME_COL].iloc[0] if not onset_rows.empty else None
 onset_window_t0 = first_label_t + 1 if first_label_t is not None else None
 onset_window_t1 = first_label_t + PREDICTION_HORIZON if first_label_t is not None else None
 
-# Alert Markers
-alert_rows    = p_preds[p_preds["pred_prob"] >= threshold]
-first_alert_t = alert_rows[TIME_COL].iloc[0] if not alert_rows.empty else None
+@st.cache_data
+def get_calibration(_model):
+    full_test = pd.read_parquet(DATA_PATH)
+    f_cols = [c for c in full_test.columns if c not in [PATIENT_ID_COL, TIME_COL, TARGET_COL, "sepsis"]]
+    full_probs = _model.predict(xgb.DMatrix(full_test[f_cols]))
+    prob_true, prob_pred = calibration_curve(full_test[TARGET_COL], full_probs, n_bins=10)
+    return prob_true, prob_pred
+
+prob_true, prob_pred = get_calibration(model)
+calibrated_frac = float(np.interp(final_risk, prob_pred, prob_true))
+
+# Over full patient history (all timesteps revealed)
+if p_preds_full[TARGET_COL].nunique() > 1:
+    patient_auprc = average_precision_score(p_preds_full[TARGET_COL], p_preds_full["pred_prob"])
+else:
+    patient_auprc = None
 
 # ── Header ─────────────────────────────────────────────────────────────────────
-st.markdown(f"# Patient {selected_id}")
-# st.markdown(f'<div class="patient-header">SIMULATED VIEW AT HOUR {current_t}</div>', unsafe_allow_html=True)
+st.markdown(f"# {id_to_name[selected_id]}") # Changed from Patient {selected_id}
 st.markdown(
     f'<div class="patient-header">'
-    f'{gender_display} | Age {int(patient_age)} | {len(p_preds_full)} Timtesteps Total'
+    f'ID: {selected_id} | {gender_display} | Age {int(patient_age) if patient_age != "N/A" else "N/A"}'
     f'</div>',
     unsafe_allow_html=True
 )
 
-c1, c2, c3, c4, = st.columns(4)
-# (Metric card logic is the same as your original, using peak_risk and final_risk)
+c1, c2, c3, c4 = st.columns(4)
 for col, label, value, extra in [
     (c1, "CURRENT TIMESTEP", str(current_t), 'class="metric-value"'),
-    (c2, "CURRENT RISK", f"{final_risk:.1%}", f'class="metric-value risk-{"HIGH" if final_risk >= 0.7 else "MEDIUM" if final_risk >= 0.4 else "LOW"}"'),
-    (c3, "TRUE OUTCOME", "SEPSIS" if true_outcome else "NO SEPSIS", 'class="metric-value risk-HIGH"' if true_outcome else 'class="metric-value risk-LOW"'),
-    (c4, "ALERTS FIRED", str(n_alerts), 'class="metric-value"'),
+    (c2, "CURRENT RAW OUTPUT", f"{final_risk:.1%}", f'class="metric-value risk-{"HIGH" if final_risk >= 0.7 else "MEDIUM" if final_risk >= 0.4 else "LOW"}"'),
+    (c3, "CALIBRATED FRACTION", f"{calibrated_frac:.1%}", f'class="metric-value risk-{"HIGH" if calibrated_frac >= 0.7 else "MEDIUM" if calibrated_frac >= 0.4 else "LOW"}"'),
+    (c4, "PATIENT AUPRC", f"{patient_auprc:.2f}" if patient_auprc is not None else "N/A", 'class="metric-value"'),
 ]:
     col.markdown(f'<div class="metric-card"><div class="metric-label">{label}</div><div {extra}>{value}</div></div>', unsafe_allow_html=True)
 
 # ── Main Risk Chart ────────────────────────────────────────────────────────────
 n_features = len(selected_features)
-fig = make_subplots(rows=1+n_features, cols=1, shared_xaxes=True, vertical_spacing=0.04, 
-                    row_heights=[0.55] + [0.45/n_features]*n_features if n_features else [1.0])
+fig = make_subplots(rows=1+n_features, cols=1, shared_xaxes=True, vertical_spacing=0.15, 
+                    row_heights=[0.65] + [0.35/n_features]*n_features if n_features else [1.0])
 
-# Fix X-axis range so it doesn't jump
 full_x_range = [all_times.min(), all_times.max()]
 
-# Risk Curve
 fig.add_trace(go.Scatter(x=p_preds[TIME_COL], y=p_preds["pred_prob"], fill="tozeroy",
-                         line=dict(color="#ff4d4f", width=2.5), name="Risk Prob"), row=1, col=1)
+                         line=dict(color=COLOR_RISK_HIGH, width=2.5), name="Risk Prob"), row=1, col=1,)
 
-# Alert markers (visible only if alerts happened before current_t)
-alert_mask = p_preds["pred_prob"] >= threshold
-if alert_mask.any():
-    fig.add_trace(go.Scatter(x=p_preds[TIME_COL][alert_mask], y=p_preds["pred_prob"][alert_mask],
-                             mode="markers", marker=dict(color="#ff4d4f", size=6), name="Alert"), row=1, col=1)
+if onset_window_t0 is not None:
+    fig.add_vrect(
+        x0=onset_window_t0, x1=onset_window_t1,
+        fillcolor="rgba(250,173,20,0.2)",
+        line=dict(color=COLOR_RISK_MED, width=2, dash="solid"),
+        annotation_text="SEPSIS",
+        annotation_position="top left",
+        annotation_font=dict(color=COLOR_RISK_MED, size=PLOT_FONT_ANNOTATION, family="IBM Plex Mono"),
+        row=1, col=1,
+    )
 
-# Annotations (Vertical lines only appear if we've passed that timepoint)
-if first_alert_t is not None:
-    fig.add_vline(x=first_alert_t, line_dash="dash", line_color="#ff4d4f", row=1, col=1)
+fig.update_yaxes(range=[0, 1], row=1, col=1, tickfont=dict(size=PLOT_FONT_TICKS), title_text="Predicted Risk", title_font=dict(size=PLOT_FONT_MAIN))
 
-if first_label_t is not None and current_t >= first_label_t:
-    fig.add_vline(x=first_label_t, line_color="#faad14", row=1, col=1)
-# ── Feature Subplots with Unique Colors ────────────────────────────────────────
-# Use the color palette defined in your config
-FEATURE_COLORS = ["#58a6ff", "#3fb950", "#d2a8ff", "#ffa657", "#79c0ff", "#56d364"]
-
+# ── Feature Subplots ───────────────────────────────────────────────────────────
 for i, feat in enumerate(selected_features):
-    # The modulo (%) ensures we don't index out of bounds if you add many features
     color = FEATURE_COLORS[i % len(FEATURE_COLORS)] 
     
     fig.add_trace(go.Scatter(
@@ -179,40 +227,40 @@ for i, feat in enumerate(selected_features):
         line=dict(color=color, width=1.5), 
         name=feat,
         hovertemplate=f"<b>{feat}</b>: %{{y:.2f}}<extra></extra>"
-    ), row=i+2, col=1) # Starts at row 2 because row 1 is the Risk Curve
-
-    # Mirror the onset window on feature subplots for visual alignment
-    if onset_window_t0 is not None:
-        fig.add_vrect(
-            x0=onset_window_t0, x1=onset_window_t1,
-            fillcolor="rgba(250,173,20,0.05)",
-            line=dict(color="rgba(250,173,20,0.2)", width=1, dash="dot"),
-            row=i+2, col=1,
-        )
+    ), row=i+2, col=1)
     
     fig.update_yaxes(
-        title_text=feat, 
-        title_font=dict(size=10, color=color), # Match axis title to line color
-        gridcolor="#21262d", 
+        title_font=dict(size=PLOT_FONT_MAIN, color=color), 
+        tickfont=dict(size=PLOT_FONT_TICKS),
+        gridcolor=COLOR_GRID, 
         zeroline=False, 
         row=i+2, col=1
     )
-fig.update_xaxes(range=full_x_range, gridcolor="#21262d")
-fig.update_layout(height=400 + n_features*120, paper_bgcolor="#0d1117", plot_bgcolor="#0d1117", 
-                  margin=dict(l=10, r=10, t=30, b=10), font=dict(family="IBM Plex Mono", color="#8b949e"))
-st.plotly_chart(fig, use_container_width=True)
+
+fig.update_xaxes(
+    range=full_x_range, gridcolor=COLOR_GRID, 
+    title_text="Timestep", title_font=dict(size=PLOT_FONT_MAIN), 
+    tickfont=dict(size=PLOT_FONT_TICKS), 
+    row=n_features+1, col=1
+)
+
+fig.update_layout(
+    height=400 + n_features*120, 
+    paper_bgcolor=COLOR_BG_MAIN, plot_bgcolor=COLOR_BG_MAIN, 
+    margin=dict(l=10, r=10, t=30, b=10), 
+    font=dict(family="IBM Plex Mono", color=COLOR_TEXT_MUTED, size=PLOT_FONT_MAIN)
+)
+st.plotly_chart(fig, width='stretch')
 
 # ── SHAP Reasoning ─────────────────────────────────────────────────────────────
 st.markdown("---")
 st.header("Current Risk Explanation")
 
-# Explain the CURRENT observation
 obs = p_data_full[p_data_full[TIME_COL] == current_t][feature_cols]
 if not obs.empty:
     shap_values = explainer(obs)
     sv = shap_values[0]
     
-    # Calculate top 9 + "Other"
     full_df = pd.DataFrame({'name': sv.feature_names, 'val': sv.data, 'shaps': sv.values})
     full_df['abs'] = full_df['shaps'].abs()
     full_df = full_df.sort_values('abs', ascending=False)
@@ -223,19 +271,66 @@ if not obs.empty:
     plot_names = [f"{n} = {v:.2f}" for n, v in zip(top_df['name'], top_df['val'])] + ["Other features"]
     plot_shaps = list(top_df['shaps']) + [other_impact]
     
-    # Reverse for better visual flow (top impact at top)
-    plot_names.reverse(); plot_shaps.reverse()
+    plot_names.reverse()
+    plot_shaps.reverse()
 
     fig_shap = go.Figure(go.Waterfall(
         orientation="h", measure=["relative"]*len(plot_names),
         y=plot_names, x=plot_shaps, base=sv.base_values,
         text=[f"{x:+.4f}" for x in plot_shaps], textposition="outside",
-        decreasing={"marker": {"color": "#58a6ff"}}, 
-        increasing={"marker": {"color": "#ff4d4f"}}
+        decreasing={"marker": {"color": COLOR_INFO}}, 
+        increasing={"marker": {"color": COLOR_RISK_HIGH}}
     ))
-    fig_shap.update_layout(paper_bgcolor="#0d1117", plot_bgcolor="#0d1117", 
-                          font=dict(family="IBM Plex Mono", color="#8b949e"),
-                          margin=dict(l=10, r=80, t=10, b=10), height=400)
-    st.plotly_chart(fig_shap, use_container_width=True)
+    fig_shap.update_layout(
+        paper_bgcolor=COLOR_BG_MAIN, plot_bgcolor=COLOR_BG_MAIN, 
+        font=dict(family="IBM Plex Mono", color=COLOR_TEXT_MUTED, size=PLOT_FONT_MAIN),
+        margin=dict(l=10, r=80, t=10, b=10), height=400
+    )
+    st.plotly_chart(fig_shap, width='stretch')
 else:
     st.warning("No data available for the selected timestep.")
+
+# ── Calibration Curve ──────────────────────────────────────────────────────────
+st.markdown("---")
+st.header("Calibration Curve")
+
+fig_cal = go.Figure()
+
+fig_cal.add_trace(go.Scatter(
+    x=[0, 1], y=[0, 1],
+    mode="lines",
+    line=dict(color="#30363d", width=1.5, dash="dash"),
+    name="Perfectly Calibrated",
+))
+
+fig_cal.add_trace(go.Scatter(
+    x=prob_pred, y=prob_true,
+    mode="lines+markers",
+    line=dict(color=COLOR_INFO, width=2),
+    marker=dict(size=7),
+    name="XGBoost",
+    hovertemplate="Mean predicted: %{x:.2f}<br>Fraction positive: %{y:.2f}<extra></extra>",
+))
+
+fig_cal.add_vline(x=final_risk, line_dash="dot", line_color="rgba(255,77,79,0.7)", line_width=1.5)
+fig_cal.add_hline(y=calibrated_frac, line_dash="dot", line_color="rgba(255,77,79,0.7)", line_width=1.5)
+
+fig_cal.add_trace(go.Scatter(
+    x=[final_risk], y=[calibrated_frac],
+    mode="markers",
+    marker=dict(color=COLOR_RISK_HIGH, size=12, symbol="circle", line=dict(color="#fff", width=2)),
+    name=f"Current output ({final_risk:.1%} → {calibrated_frac:.1%})",
+    hovertemplate=f"Model output: {final_risk:.1%}<br>Fraction positive: {calibrated_frac:.1%}<extra></extra>",
+))
+
+fig_cal.update_layout(
+    paper_bgcolor=COLOR_BG_MAIN, plot_bgcolor=COLOR_BG_MAIN,
+    font=dict(family="IBM Plex Mono", color=COLOR_TEXT_MUTED, size=PLOT_FONT_CALIB),
+    xaxis=dict(title="Mean Predicted Probability", gridcolor=COLOR_GRID, range=[0, 1]),
+    yaxis=dict(title="Fraction of Positives", gridcolor=COLOR_GRID, range=[0, 1]),
+    legend=dict(bgcolor="rgba(0,0,0,0)"),
+    margin=dict(l=10, r=10, t=10, b=10),
+    height=350,
+)
+
+st.plotly_chart(fig_cal, width='stretch')
