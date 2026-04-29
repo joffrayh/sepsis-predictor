@@ -278,6 +278,7 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "pip" },
+    { name = "ruff" },
 ]
 
 [package.metadata]
@@ -304,7 +305,10 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pip", specifier = ">=26.0.1" }]
+dev = [
+    { name = "pip", specifier = ">=26.0.1" },
+    { name = "ruff", specifier = ">=0.15.11" },
+]
 
 [[package]]
 name = "colorama"

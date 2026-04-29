@@ -30,4 +30,5 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pip>=26.0.1",
+    "ruff>=0.15.11",
 ]
