@@ -62,9 +62,24 @@ def handle_outliers(df, config_path="src/data_processing/cleaning_config.json"):
         if transform == "log1p":
             print(f"	Applying log1p transform to {col}")
             df[col] = np.log1p(df[col])
-            # To be entirely faithful to the notebook:
-            if col == "wbc":
-                df.rename(columns={col: "wbc_log1p"}, inplace=True)
+
+    # SpO2: two-step rule matching old pipeline
+    if "spo2" in df.columns:
+        df.loc[df["spo2"] > 150, "spo2"] = np.nan
+        df.loc[df["spo2"] > 100, "spo2"] = 100
+
+    # temp_C: values > 90 are assumed to be in Fahrenheit; rescue into temp_F then nullify
+    if "temp_C" in df.columns:
+        if "temp_F" in df.columns:
+            mask = (df["temp_C"] > 90) & (df["temp_F"].isna())
+            df.loc[mask, "temp_F"] = df.loc[mask, "temp_C"]
+        df.loc[df["temp_C"] > 90, "temp_C"] = np.nan
+
+    # FiO2: normalise 0-1 scale to percent, then apply plausibility bounds
+    if "fio2" in df.columns:
+        df.loc[df["fio2"] > 100, "fio2"] = np.nan
+        df.loc[df["fio2"] < 1, "fio2"] *= 100
+        df.loc[df["fio2"] < 20, "fio2"] = np.nan
 
     return df
 

@@ -13,6 +13,7 @@ from trajectory_builder import (
 
 
 def parse_args():
+    """Parse command-line arguments for the pipeline."""
     parser = argparse.ArgumentParser(
         description="MIMIC-IV Sepsis Prediction Data Pipeline"
     )
@@ -40,12 +41,16 @@ def parse_args():
 
 
 def main():
+    """Execute the full MIMIC-IV sepsis data pipeline end-to-end."""
     args = parse_args()
 
     # Safe defaults config simulation
     config = {
         "extraction": {
-            "metadata_path": "src/data_processing/processing_pipeline/extraction/extraction_metadata.json",
+            "metadata_path": (
+                "src/data_processing/processing_pipeline/"
+                "extraction/extraction_metadata.json"
+            ),
             "export_dir": "data/processed_files",
         },
         "cohort": {
@@ -69,6 +74,9 @@ def main():
             extractor = MIMICExtractor(
                 user=args.username,
                 password=args.password,
+                host=os.environ.get("DB_HOST", "localhost"),
+                port=int(os.environ.get("DB_PORT", 5432)),
+                dbname=os.environ.get("DB_NAME", "mimiciv"),
                 export_dir=config["extraction"]["export_dir"],
             )
             extractor.extract_all(config["extraction"]["metadata_path"])
@@ -88,9 +96,9 @@ def main():
             del bacterio, demog, raw_data_dict
             gc.collect()
         else:
-            print("Cohort file already exists. Loading valid onset anchors...")
+            print("Cohort file already exists. Loading cohort...")
             onset = pd.read_csv(
-                f"{config['cohort']['output_dir']}/onset.csv", sep="|", low_memory=False
+                f"{config['cohort']['output_dir']}/cohort.csv", sep="|", low_memory=False
             )
 
         print("\n=== PHASE 3: TRAJECTORY & MEASUREMENT FORMATTING ===")
@@ -98,10 +106,8 @@ def main():
         measurements, code_to_concept, hold_times = load_measurement_mappings()
 
         valid_stays = onset["stay_id"].unique()
-        input_dir = config["trajectories"]["input_dir"]
 
         # Load high volume chunked data memory-safely
-        # Note: In trajectory_builder, load_and_filter_chunked expects the filename and valid_stays
         print("Loading Chartevents chunked...")
         ce_df = load_and_filter_chunked(
             "chartevents.csv", valid_stays, onset, time_col="charttime"
@@ -115,21 +121,22 @@ def main():
 
         print("Loading Mechanical Ventilation data chunked...")
         mv_df = load_and_filter_chunked(
-            "mechvent.csv", valid_stays, onset, time_col="starttime"
+            "mechvent.csv", valid_stays, onset, time_col="charttime"
         )
 
-        # Dummy data dict to pass through structural standardizer logic (the notebook did this)
+        # data_dict passes static demog info and secondary tables to the trajectory standardiser
+        print("Loading secondary tables (fluid, vaso, UO, abx)...")
         data_dict = {
-            "demog": pd.read_csv(
-                f"{input_dir}/demog_processed.csv", sep="|", low_memory=False
-            )
+            "demog": load_and_filter_chunked("demog_processed.csv", valid_stays),
+            "abx": load_and_filter_chunked("abx_processed.csv", valid_stays),
+            "fluid": load_and_filter_chunked("fluid.csv", valid_stays),
+            "vaso": load_and_filter_chunked("vaso.csv", valid_stays),
+            "UO": load_and_filter_chunked("uo.csv", valid_stays),
         }
-        onset = onset.rename(
-            columns={"anchor_time": "suspected_infection_time_sec"}
-        )  # align naming
 
         print(
-            f"Building {config['trajectories']['timestep']}-hour interval trajectories..."
+            f"Building {config['trajectories']['timestep']}-hour "
+            "interval trajectories..."
         )
         final_trajectories = build_trajectories(
             onset,
@@ -143,8 +150,8 @@ def main():
             config["trajectories"],
         )
 
-        # We will add saving the fastparquet here
-        out_path = f"{config['trajectories']['output_dir']}/patient_timeseries_cleaned_final.parquet"
+        out_dir = config["trajectories"]["output_dir"]
+        out_path = f"{out_dir}/patient_timeseries_cleaned_final.parquet"
         print(f"Saving final cleaned FAIR dataset to: {out_path}")
         final_trajectories.to_parquet(out_path, engine="fastparquet")
         print("PIPELINE COMPLETE.")

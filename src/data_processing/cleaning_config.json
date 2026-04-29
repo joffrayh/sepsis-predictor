@@ -1,12 +1,11 @@
 {
-  "heart_rate": { "min_valid": 7.5, "max_valid": 250, "clip_low": 20, "impute_extreme_nans": true },
-  "map": { "min_valid": 25, "max_valid": 300, "clip_high": 180, "impute_extreme_nans": true },
-  "respiratory_rate": { "min_valid": 4, "max_valid": 80, "clip_high": 60, "impute_extreme_nans": true },
-  "temp_C": { "min_valid": 25, "max_valid": 45, "clip_low": 32, "clip_high": 42, "convert_f_to_c": [90, 115], "impute_extreme_nans": true },
-  "spo2": { "min_valid": 50, "max_valid": 100, "impute_extreme_nans": true },
+  "heart_rate": { "min_valid": 7.5, "max_valid": 250, "clip_low": 20 },
+  "map": { "min_valid": 25, "max_valid": 300, "clip_high": 180 },
+  "respiratory_rate": { "min_valid": 4, "max_valid": 80, "clip_high": 60 },
   "wbc": { "min_valid": 0.1, "max_valid": 500, "transform": "log1p" },
-  "lactate": { "min_valid": 0.1, "max_valid": 20, "impute_extreme_nans": true },
-  "creatinine": { "min_valid": 0.1, "max_valid": 20, "impute_extreme_nans": true },
+  "lactate": { "min_valid": 0.1, "max_valid": 20 },
+  "lactic_acid": { "min_valid": 0.1, "max_valid": 20 },
+  "creatinine": { "min_valid": 0.1, "max_valid": 20 },
   "platelets": { "clip_high": 1500 },
   "weight_kg": { "max_valid": 300 },
   "weight_lb": { "max_valid": 660 },
@@ -32,5 +31,6 @@
   "ph_arterial": { "min_valid": 6.7, "max_valid": 8.0 },
   "arterial_o2_pressure": { "max_valid": 700 },
   "arterial_co2_pressure": { "max_valid": 200 },
-  "arterial_base_excess": { "min_valid": -50 }
+  "arterial_base_excess": { "min_valid": -50 },
+  "bilirubin_total": { "max_valid": 30 }
 }

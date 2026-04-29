@@ -2,13 +2,14 @@ import json
 import os
 
 import psycopg2 as pg
-from sqlalchemy import create_engine
 
 
 class MIMICExtractor:
     """
-    A unified class to extract data from a MIMIC-IV PostgreSQL database.
-    Driven by extraction_metadata.json parameters to handle varying dataset sizes.
+    Unified extractor for a MIMIC-IV PostgreSQL database.
+
+    Driven by ``extraction_metadata.json`` to handle varying dataset sizes.
+    Uses psycopg2 ``COPY`` for all bulk extraction directly to CSV.
     """
 
     def __init__(
@@ -16,33 +17,29 @@ class MIMICExtractor:
         user,
         password="",
         host="localhost",
+        port=5432,
         dbname="mimiciv",
         export_dir="processed_files",
     ):
         self.user = user
         self.password = password
         self.host = host
+        self.port = port
         self.dbname = dbname
         self.export_dir = os.path.join(os.getcwd(), export_dir)
 
         if not os.path.exists(self.export_dir):
             os.makedirs(self.export_dir)
 
-        # Connect strictly with Psycopg2 for fast COPY commands
-        conn_string = f"dbname='{self.dbname}' user='{self.user}' host='{self.host}' options='--search_path=mimiciv,mimiciv_icu,mimiciv_hosp,public'"
+        search_path = "--search_path=mimiciv_hosp,mimiciv_icu,public"
+        conn_string = (
+            f"dbname='{self.dbname}' user='{self.user}' "
+            f"host='{self.host}' port='{self.port}' "
+            f"options='{search_path}'"
+        )
         if self.password:
             conn_string += f" password='{self.password}'"
         self.pg_conn = pg.connect(conn_string)
-
-        # Connect using SQLAlchemy for chunked Pandas reads when sorting is required
-        auth_string = f"{self.user}"
-        if self.password:
-            auth_string += f":{self.password}"
-        db_url = f"postgresql+psycopg2://{auth_string}@{self.host}/{self.dbname}"
-        self.alchemy_engine = create_engine(
-            db_url,
-            connect_args={"options": "-c search_path=mimiciv_hosp,mimiciv_icu,public"},
-        )
 
     def extract_all(
         self,
@@ -50,8 +47,14 @@ class MIMICExtractor:
         tables=None,
     ):
         """
-        Reads the metadata JSON and extracts every target.
-        If `tables` is provided, only extracts those specifically named.
+        Extract all tables defined in the metadata JSON.
+
+        Parameters
+        ----------
+        metadata_path : str
+            Path to the extraction_metadata.json configuration file.
+        tables : list of str, optional
+            If provided, only extracts the named table keys.
         """
         with open(metadata_path) as f:
             metadata = json.load(f)
@@ -85,5 +88,5 @@ class MIMICExtractor:
         print(f"Success! Saved to {output_csv}")
 
     def close(self):
+        """Close all open database connections."""
         self.pg_conn.close()
-        self.alchemy_engine.dispose()
