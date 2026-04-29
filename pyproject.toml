@@ -32,3 +32,32 @@ dev = [
     "pip>=26.0.1",
     "ruff>=0.15.11",
 ]
+
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"  
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes (unused imports, undefined names etc.)
+    "I",    # isort (import ordering)
+    "N",    # pep8-naming
+    "D",    # pydocstring — enforces NumPy docstrings if configured
+    "UP",   # pyupgrade (modernise syntax automatically)
+    "B",    # flake8-bugbear (catches common bugs)
+    "SIM",  # flake8-simplify
+]
+ignore = [
+    "D100",  # missing docstring in public module
+    "D104",  # missing docstring in public package
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"  # enforces NumPy-style docstrings
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
