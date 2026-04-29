@@ -1,0 +1,491 @@
+import os
+import numpy as np
+import pandas as pd
+import math
+from tqdm.auto import tqdm
+import json
+
+from .utils.clinical_heuristics import (
+    handle_outliers,
+    estimate_gcs_from_rass,
+    estimate_fio2,
+    handle_unit_conversions,
+)
+from .utils.imputation import (
+    sample_and_hold,
+    add_missingness_features,
+    handle_missing_values,
+)
+from .utils.labels import (
+    calculate_derived_variables,
+    apply_exclusion_criteria,
+    add_septic_shock_flag,
+    add_infection_and_sepsis_flag,
+)
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def load_measurement_mappings():
+    print("Loading measurement mappings")
+    with open(f"{BASE_DIR}/ReferenceFiles/measurement_mappings.json", "r") as f:
+        measurements = json.load(f)
+
+    code_to_concept = {}
+    for concept, info in measurements.items():
+        for code in info["codes"]:
+            code_to_concept[code] = concept
+
+    hold_times = {}
+    for concept, info in measurements.items():
+        if "hold_time" in info:
+            hold_times[concept] = info["hold_time"]
+
+    return measurements, code_to_concept, hold_times
+
+
+def load_and_filter_chunked(
+    filename,
+    valid_stays,
+    onset_df=None,
+    time_col=None,
+    winb4=24,
+    winaft=72,
+    itemid_filter=None,
+):
+    """
+    Reads large CSV files in chunks and filters out rows not belonging
+    to our target patients or target time windows.
+    This saves huge RAM compared to old function.
+    """
+    filepath = f"processed_files/{filename}"
+    if not os.path.exists(filepath):
+        print(f"Warning: {filepath} not found.")
+        return pd.DataFrame()
+
+    CHUNKSIZE = 1000000
+
+    with open(filepath, "rb") as f:
+        total_chunks = (sum(1 for _ in f) - 1) // CHUNKSIZE + 1
+
+    chunks = []
+    # read in row chunks to keep memory usage small
+    for chunk in tqdm(
+        pd.read_csv(filepath, sep="|", chunksize=CHUNKSIZE, low_memory=False),
+        total=total_chunks,
+        desc=f"\tProcessing {filename}",
+        ncols=100,
+    ):
+        # get valid patients
+        chunk = chunk[chunk["stay_id"].isin(valid_stays)]
+        if chunk.empty:
+            continue
+
+        # filter by item IDs if provided (e.g. for chartevents)
+        if itemid_filter is not None and "itemid" in chunk.columns:
+            chunk = chunk[chunk["itemid"].astype(str).isin(itemid_filter)]
+            if chunk.empty:
+                continue
+
+        # filter by time window if time column is provided
+        if onset_df is not None and time_col is not None and time_col in chunk.columns:
+            chunk = chunk.merge(
+                onset_df[["stay_id", "anchor_time"]], on="stay_id", how="inner"
+            )
+            mask = (chunk[time_col] >= chunk["anchor_time"] - winb4 * 3600) & (
+                chunk[time_col] < chunk["anchor_time"] + winaft * 3600
+            )
+            chunk = chunk[mask].drop(columns=["anchor_time"])
+
+        chunks.append(chunk)
+
+    if chunks:
+        return pd.concat(chunks, ignore_index=True)
+    return pd.DataFrame()
+
+
+def process_patient_measurements_vectorized(
+    ce_df, lab_df, mv_df, code_to_concept, batch_size=500, output_dir="processed_files"
+):
+    print("Pivoting chartevents, lab events and mechvent...")
+
+    if not ce_df.empty:
+        print("\tMapping chartevents itemids to concepts...")
+        ce_df["concept"] = ce_df["itemid"].astype(str).map(code_to_concept)
+    else:
+        print("WARNING: chartevents dataframe is empty.")
+
+    if not lab_df.empty:
+        print("\tMapping labevents itemids to concepts...")
+        lab_df["concept"] = lab_df["itemid"].astype(str).map(code_to_concept)
+    else:
+        print("WARNING: labevents dataframe is empty.")
+
+    print("\tJoining chartevents and labevents...")
+    ce_lab = pd.concat(
+        [
+            ce_df[["stay_id", "charttime", "concept", "valuenum"]]
+            if not ce_df.empty
+            else pd.DataFrame(),
+            lab_df[["stay_id", "charttime", "concept", "valuenum"]]
+            if not lab_df.empty
+            else pd.DataFrame(),
+        ]
+    )
+    ce_lab = ce_lab.dropna(subset=["concept"])
+
+    # free the input frames now they're combined
+    del ce_df, lab_df
+
+    all_stay_ids = ce_lab["stay_id"].unique()
+    batches = [
+        all_stay_ids[i : i + batch_size]
+        for i in range(0, len(all_stay_ids), batch_size)
+    ]
+    print(f"\tPivoting in {len(batches)} batches of up to {batch_size} stays...")
+
+    temp_dir = os.path.join(output_dir, "_pivot_temp")
+    os.makedirs(temp_dir, exist_ok=True)
+    batch_paths = []
+
+    for i, batch_stays in enumerate(
+        tqdm(batches, desc="\tPivoting batches", ncols=100)
+    ):
+        batch = ce_lab[ce_lab["stay_id"].isin(batch_stays)]
+        if batch.empty:
+            continue
+
+        wide = batch.pivot_table(
+            index=["stay_id", "charttime"],
+            columns="concept",
+            values="valuenum",
+            aggfunc="last",
+        ).reset_index()
+        wide.columns.name = None
+
+        path = os.path.join(temp_dir, f"batch_{i}.parquet")
+        wide.to_parquet(path, compression="zstd")
+        batch_paths.append(path)
+
+        # explicitly free batch memory before next iteration
+        del wide, batch
+
+    del ce_lab
+
+    print("\tConcatenating batches from disk...")
+    wide_data = pd.concat(
+        [
+            pd.read_parquet(p)
+            for p in tqdm(batch_paths, desc="\tReading batches", ncols=100)
+        ],
+        ignore_index=True,
+    )
+
+    # clean up temp files
+    for p in batch_paths:
+        os.remove(p)
+    os.rmdir(temp_dir)
+
+    # add mechvent
+    if not mv_df.empty:
+        print("\tMerging mechvent with wide data...")
+        mv_clean = mv_df[["stay_id", "charttime", "mechvent"]].drop_duplicates(
+            subset=["stay_id", "charttime"], keep="last"
+        )
+        wide_data = pd.merge(
+            wide_data, mv_clean, on=["stay_id", "charttime"], how="outer"
+        )
+    else:
+        print("WARNING: mechvent dataframe is empty.")
+        wide_data["mechvent"] = np.nan
+
+    return wide_data
+
+
+def standardize_patient_trajectories(
+    init_traj,
+    data_dict,
+    onset,
+    timestep=4,
+    window_before=24,
+    window_after=72,
+    output_dir="processed_files",
+    flush_every=5000,
+):
+    """
+    Standardise patient trajectories to fixed time steps (e.g. every 4 hours)
+    relative to ICU admission time (anchor_time).
+    For each time step, we take the mean of all measurements within that time step.
+    Processed data is flushed to disk every flush_every rows to avoid OOM errors.
+    """
+    print("Standardising trajectories to fixed time step...")
+
+    # create hash maps for the secondary tables
+    fluid_grp = (
+        {k: v for k, v in data_dict["fluid"].groupby("stay_id")}
+        if "fluid" in data_dict
+        else {}
+    )
+    vaso_grp = (
+        {k: v for k, v in data_dict["vaso"].groupby("stay_id")}
+        if "vaso" in data_dict
+        else {}
+    )
+    uo_grp = (
+        {k: v for k, v in data_dict["UO"].groupby("stay_id")}
+        if "UO" in data_dict
+        else {}
+    )
+    abx_grp = (
+        {k: v for k, v in data_dict["abx"].groupby("stay_id")}
+        if "abx" in data_dict
+        else {}
+    )
+    demog_dict = (
+        data_dict["demog"].set_index("stay_id").to_dict("index")
+        if "demog" in data_dict
+        else {}
+    )
+    anchor_dict = onset.set_index("stay_id")["anchor_time"].to_dict()
+    onset_time_dict = onset.set_index("stay_id")["onset_time"].to_dict()
+
+    columns = [
+        "timestep",
+        "stay_id",
+        "onset_time",
+        "timestamp",
+        "gender",
+        "age",
+        "charlson_comorbidity_index",
+        "re_admission",
+        "los",
+        "morta_hosp",
+        "morta_90",
+        *[
+            col
+            for col in init_traj.columns
+            if col not in ["timestep", "stay_id", "charttime"]
+        ],
+        "fluid_total",
+        "fluid_step",
+        "uo_total",
+        "uo_step",
+        "balance",
+        "vaso_median",
+        "vaso_max",
+        "abx_given",
+        "hours_since_first_abx",
+        "num_abx",
+    ]
+
+    processed_data = []
+    flush_count = 0
+    temp_dir = os.path.join(output_dir, "_std_temp")
+    os.makedirs(temp_dir, exist_ok=True)
+    temp_paths = []
+
+    grouped_traj = init_traj.groupby("stay_id")
+
+    # for each patient trajectory, create fixed time steps relative to
+    # ICU admission time (anchor_time) and estimate measurements within each step
+    for stay_id, patient_traj in tqdm(
+        grouped_traj, desc="\tStandardising per stay_id", ncols=150
+    ):
+        start_time = anchor_dict.get(stay_id, 0)
+        onset_time = onset_time_dict.get(stay_id, np.nan)
+        demographics = demog_dict.get(stay_id, {})
+
+        fluid_data = fluid_grp.get(stay_id, pd.DataFrame())
+        vaso_data = vaso_grp.get(stay_id, pd.DataFrame())
+        uo_data = uo_grp.get(stay_id, pd.DataFrame())
+        abx_data = abx_grp.get(stay_id, pd.DataFrame())
+
+        patient_times = sorted(patient_traj["charttime"].unique())
+        if not patient_times:
+            continue
+
+        first_time = max(patient_times[0], start_time - window_before * 3600)
+        last_time = min(patient_times[-1], start_time + window_after * 3600)
+
+        num_timesteps = math.ceil((last_time - first_time) / (timestep * 3600))
+
+        for timestep_idx in range(num_timesteps):
+            window_start = first_time + (timestep_idx * timestep * 3600)
+            window_end = window_start + (timestep * 3600)
+
+            if window_end < first_time or window_start > last_time:
+                continue
+
+            # measurements: mean of all readings within the window, else NaN
+            mask = (patient_traj["charttime"] >= window_start) & (
+                patient_traj["charttime"] < window_end
+            )
+            window_data = patient_traj[mask]
+            if len(window_data) == 0:
+                measurements = {
+                    col: np.nan
+                    for col in patient_traj.columns
+                    if col not in ["stay_id", "charttime"]
+                }
+            else:
+                measurements = window_data.mean(axis=0, skipna=True).to_dict()
+
+            # fluids
+            fluid_total, fluid_step = 0, 0
+            if not fluid_data.empty:
+                fluid_step = fluid_data[
+                    (fluid_data["starttime"] < window_end)
+                    & (fluid_data["endtime"] >= window_start)
+                ]["amount"].sum()
+                fluid_total = fluid_data[fluid_data["endtime"] < window_end][
+                    "amount"
+                ].sum()
+
+            # vasopressors
+            vaso_median, vaso_max = 0, 0
+            if not vaso_data.empty:
+                v_mask = (vaso_data["starttime"] <= window_end) & (
+                    vaso_data["endtime"] >= window_start
+                )
+                w_vaso = vaso_data[v_mask]
+                if len(w_vaso) > 0:
+                    vaso_median = w_vaso["rate_std"].median()
+                    vaso_max = w_vaso["rate_std"].max()
+
+            # urine output
+            uo_total, uo_step = 0, 0
+            if not uo_data.empty:
+                uo_step = uo_data[
+                    (uo_data["charttime"] >= window_start)
+                    & (uo_data["charttime"] < window_end)
+                ]["value"].sum()
+                uo_total = uo_data[uo_data["charttime"] < window_end]["value"].sum()
+
+            # antibiotics
+            abx_given, hrs_first_abx, num_abx = 0, None, 0
+            if not abx_data.empty:
+                abx_mask = (abx_data["starttime"] <= window_end) & (
+                    abx_data["stoptime"] >= window_start
+                )
+                w_abx = abx_data[abx_mask]
+                if len(w_abx) > 0:
+                    abx_given = 1
+                    num_abx = len(w_abx["drug"].unique())
+                first_abx_time = abx_data["starttime"].min()
+                if pd.notna(first_abx_time):
+                    hrs_first_abx = (window_end - first_abx_time) / 3600
+
+            timestep_data = {
+                "timestep": timestep_idx + 1,
+                "stay_id": stay_id,
+                "timestamp": window_start,
+                "onset_time": onset_time,
+                **demographics,
+                **measurements,
+                "fluid_total": fluid_total,
+                "fluid_step": fluid_step,
+                "uo_total": uo_total,
+                "uo_step": uo_step,
+                "balance": fluid_total - uo_total,
+                "vaso_median": vaso_median,
+                "vaso_max": vaso_max,
+                "abx_given": abx_given,
+                "hours_since_first_abx": hrs_first_abx,
+                "num_abx": num_abx,
+            }
+
+            timestep_data.pop("charttime", None)
+            processed_data.append(timestep_data)
+
+        # flush to disk once we've accumulated enough rows
+        if len(processed_data) >= flush_every:
+            path = os.path.join(temp_dir, f"chunk_{flush_count}.parquet")
+            pd.DataFrame(processed_data, columns=columns).to_parquet(
+                path, compression="zstd"
+            )
+            temp_paths.append(path)
+            processed_data = []
+            flush_count += 1
+
+    # flush any remaining rows
+    if processed_data:
+        path = os.path.join(temp_dir, f"chunk_{flush_count}.parquet")
+        pd.DataFrame(processed_data, columns=columns).to_parquet(
+            path, compression="zstd"
+        )
+        temp_paths.append(path)
+
+    print("\tConcatenating standardized chunks...")
+    result = pd.concat(
+        [
+            pd.read_parquet(p)
+            for p in tqdm(temp_paths, desc="\tReading chunks", ncols=100)
+        ],
+        ignore_index=True,
+    )
+
+    for p in temp_paths:
+        os.remove(p)
+    os.rmdir(temp_dir)
+
+    return result
+
+
+def build_trajectories(
+    onset,
+    valid_stays,
+    data_dict,
+    ce_df,
+    lab_df,
+    mv_df,
+    code_to_concept,
+    hold_times,
+    config,
+):
+    """
+    End-to-end timeseries sequence generation.
+    Memory-safely pivots data, standardises time grids, imputes missing values and generates labels.
+    """
+    output_dir = config.get("output_dir", "data/processed_files")
+
+    # 1. Pivot
+    init_traj = process_patient_measurements_vectorized(
+        ce_df, lab_df, mv_df, code_to_concept, output_dir=output_dir
+    )
+    if init_traj.empty:
+        print("No valid trajectories found matching criteria.")
+        return pd.DataFrame()
+
+    # 2. Clinical Heuristics & Sample-Hold
+    init_traj = handle_outliers(init_traj)
+    init_traj = estimate_gcs_from_rass(init_traj)
+    init_traj = estimate_fio2(init_traj)
+    init_traj = handle_unit_conversions(init_traj)
+    init_traj = sample_and_hold(init_traj, hold_times)
+
+    # 3. Standardize Time Grids
+    init_traj = standardize_patient_trajectories(
+        init_traj,
+        data_dict,
+        onset,
+        timestep=config.get("timestep", 4),
+        window_before=config.get("window_before", 24),
+        window_after=config.get("window_after", 72),
+        output_dir=output_dir,
+    )
+
+    # 4. Integrate Missingness Features BEFORE Imputation
+    init_traj = add_missingness_features(
+        init_traj, timestep_hours=config.get("timestep", 4)
+    )
+
+    # 5. Imputation
+    init_traj = handle_missing_values(init_traj, config.get("missing_threshold", 0.8))
+
+    # 6. Labels & Derived Variables
+    init_traj = calculate_derived_variables(init_traj)
+    init_traj = apply_exclusion_criteria(init_traj)
+    init_traj = add_infection_and_sepsis_flag(init_traj)
+    init_traj = add_septic_shock_flag(init_traj)
+
+    return init_traj
