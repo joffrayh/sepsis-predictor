@@ -1,5 +1,6 @@
 import json
 import os
+
 import numpy as np
 from tqdm.auto import tqdm
 
@@ -13,7 +14,7 @@ def handle_outliers(df, config_path="src/data_processing/cleaning_config.json"):
         )
         return df
 
-    with open(config_path, "r") as f:
+    with open(config_path) as f:
         outlier_bounds = json.load(f)
 
     for col, rules in tqdm(
@@ -70,11 +71,10 @@ def handle_outliers(df, config_path="src/data_processing/cleaning_config.json"):
 
 def estimate_gcs_from_rass(df):
     """
-    estimate GCS (Glascow Coma Scale. which measures level of consciousness)
+    Estimate GCS (Glascow Coma Scale. which measures level of consciousness)
     from RASS (Richmond Agitation-Sedation Scale, which measures level of
     agitation or sedation) when GCS is missing, based on certain mappings.
     """
-
     print("Estimating GCS from RASS when GCS is missing...")
     if "gcs" not in df.columns:
         print("\tGCS column not found in dataframe.")
@@ -93,10 +93,9 @@ def estimate_gcs_from_rass(df):
 
 def estimate_fio2(df):
     """
-    estimate FiO2 (fraction of inspired oxygen) when missing, based on oxygen
+    Estimate FiO2 (fraction of inspired oxygen) when missing, based on oxygen
     flow rates and device types.
     """
-
     print("Estimating FiO2...")
 
     flow_columns = ["oxygen_flow", "oxygen_flow_cannula_rate", "oxygen_flow_rate"]

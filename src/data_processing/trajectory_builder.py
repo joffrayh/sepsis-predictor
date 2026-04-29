@@ -1,26 +1,27 @@
+import json
+import math
 import os
+
 import numpy as np
 import pandas as pd
-import math
 from tqdm.auto import tqdm
-import json
 
 from .utils.clinical_heuristics import (
-    handle_outliers,
-    estimate_gcs_from_rass,
     estimate_fio2,
+    estimate_gcs_from_rass,
+    handle_outliers,
     handle_unit_conversions,
 )
 from .utils.imputation import (
-    sample_and_hold,
     add_missingness_features,
     handle_missing_values,
+    sample_and_hold,
 )
 from .utils.labels import (
-    calculate_derived_variables,
-    apply_exclusion_criteria,
-    add_septic_shock_flag,
     add_infection_and_sepsis_flag,
+    add_septic_shock_flag,
+    apply_exclusion_criteria,
+    calculate_derived_variables,
 )
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -28,7 +29,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def load_measurement_mappings():
     print("Loading measurement mappings")
-    with open(f"{BASE_DIR}/ReferenceFiles/measurement_mappings.json", "r") as f:
+    with open(f"{BASE_DIR}/ReferenceFiles/measurement_mappings.json") as f:
         measurements = json.load(f)
 
     code_to_concept = {}

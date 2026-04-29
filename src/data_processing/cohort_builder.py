@@ -1,6 +1,7 @@
+import os
+
 import numpy as np
 import pandas as pd
-import os
 
 
 def load_processed_files():
@@ -76,7 +77,6 @@ def fill_missing_icustay_ids(bacterio, demog, abx):
     An event is associated with a stay if it occurs within 48 hours before
     or after the stay, or if the patient only has one stay in the dataset.
     """
-
     print("Filling-in missing ICUSTAY IDs in bacterio (Vectorized)")
 
     # vectorised bacterio update
@@ -148,7 +148,6 @@ def find_infection_onset(abx, bacterio):
     The onset time is assigned as the time of antibiotic administration if condition 1 is met,
     or the time of culture if condition 2 is met. Only the earliest valid onset per stay is kept.
     """
-
     print("Finding presumed onset of infection according to sepsis3 guidelines")
 
     # filter columns by stay_id and medical administration time

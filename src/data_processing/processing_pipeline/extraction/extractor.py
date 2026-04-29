@@ -1,5 +1,6 @@
-import os
 import json
+import os
+
 import psycopg2 as pg
 from sqlalchemy import create_engine
 
@@ -52,7 +53,7 @@ class MIMICExtractor:
         Reads the metadata JSON and extracts every target.
         If `tables` is provided, only extracts those specifically named.
         """
-        with open(metadata_path, "r") as f:
+        with open(metadata_path) as f:
             metadata = json.load(f)
 
         for key, conf in metadata.items():
@@ -64,11 +65,10 @@ class MIMICExtractor:
     def _execute_direct_copy(self, conf, output_csv):
         """Fastest extraction method - writes direct from Postgres engine to disk."""
         query = conf["query"]
-        with self.pg_conn.cursor() as cur:
-            with open(output_csv, "w") as f:
-                cur.copy_expert(
-                    f"COPY ({query}) TO STDOUT WITH CSV HEADER DELIMITER '|'", f
-                )
+        with self.pg_conn.cursor() as cur, open(output_csv, "w") as f:
+            cur.copy_expert(
+                f"COPY ({query}) TO STDOUT WITH CSV HEADER DELIMITER '|'", f
+            )
 
     def extract_table(self, name, conf):
         """Orchestrates individual table extraction based on the metadata rules."""

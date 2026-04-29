@@ -4,10 +4,9 @@ import pandas as pd
 
 def calculate_derived_variables(df):
     """
-    calculate derived variables such as P/F ratio (arterial oxygen pressure / FiO2),
+    Calculate derived variables such as P/F ratio (arterial oxygen pressure / FiO2),
     Shock Index (heart rate / systolic blood pressure), SOFA score and SIRS criteria.
     """
-
     df["gender"] = df["gender"] - 1
     df.loc[df["age"] > 150, "age"] = 91.4
     df["mechvent"] = df["mechvent"].fillna(0)
@@ -130,7 +129,7 @@ def calculate_derived_variables(df):
 
 def apply_exclusion_criteria(df):
     """
-    apply exclusion criteria to filter out patients who do not meet the study
+    Apply exclusion criteria to filter out patients who do not meet the study
     criteria. Everything is vectorised. The exclusion criteria include:
     1. Extreme UO (>12000 ml in a 4h window)
     2. Extreme Fluid (>10000 ml in a 4h window)
@@ -182,7 +181,6 @@ def add_septic_shock_flag(df):
     5. Mark all subsequent time steps for that patient as septic shock (flag = 2)
         to indicate censoring after onset.
     """
-
     print("Adding septic shock flags...")
     df = df.sort_values(["stay_id", "timestamp"])
 

@@ -1,8 +1,8 @@
 import numpy as np
 import pandas as pd
-from tqdm.auto import tqdm
 from scipy.interpolate import interp1d
 from sklearn.impute import KNNImputer
+from tqdm.auto import tqdm
 
 
 def sample_and_hold(df, vitalslab_hold):
@@ -49,7 +49,7 @@ def sample_and_hold(df, vitalslab_hold):
 
 def fixgaps(x: np.ndarray) -> np.ndarray:
     """
-    fix gaps in a 1D array using linear interpolation. Only fills NaNs that are
+    Fix gaps in a 1D array using linear interpolation. Only fills NaNs that are
     between valid measurements, leaves leading and trailing NaNs as they are.
     """
     y = np.copy(x)
