@@ -24,18 +24,14 @@ def parse_args():
         help="Path to pipeline configuration file",
     )
     parser.add_argument(
-        "-u",
-        "--username",
-        help="MIMIC Database Username (for extraction)",
+        "--raw-data-dir",
         type=str,
         default="",
-    )
-    parser.add_argument(
-        "-p",
-        "--password",
-        help="MIMIC Database Password (for extraction)",
-        type=str,
-        default="",
+        help=(
+            "Path to raw MIMIC-IV directory containing hosp/ and icu/ subdirectories "
+            "(e.g. data/raw/mimic-iv-3.1). Required for Phase 1 extraction; "
+            "omit if extracted CSVs already exist."
+        ),
     )
     return parser.parse_args()
 
@@ -70,21 +66,17 @@ def main():
 
     try:
         print("=== PHASE 1: EXTRACTION ===")
-        if args.username and args.password:
+        if args.raw_data_dir:
             extractor = MIMICExtractor(
-                user=args.username,
-                password=args.password,
-                host=os.environ.get("DB_HOST", "localhost"),
-                port=int(os.environ.get("DB_PORT", 5432)),
-                dbname=os.environ.get("DB_NAME", "mimiciv"),
+                raw_data_dir=args.raw_data_dir,
                 export_dir=config["extraction"]["export_dir"],
             )
             extractor.extract_all(config["extraction"]["metadata_path"])
             extractor.close()
         else:
-            print("Skipping database extraction as no credentials were provided.")
+            print("Skipping extraction (no --raw-data-dir provided).")
             print(
-                "Assuming raw tables already exist in: ",
+                "Assuming CSV files already exist in:",
                 config["extraction"]["export_dir"],
             )
 
@@ -98,7 +90,9 @@ def main():
         else:
             print("Cohort file already exists. Loading cohort...")
             onset = pd.read_csv(
-                f"{config['cohort']['output_dir']}/cohort.csv", sep="|", low_memory=False
+                f"{config['cohort']['output_dir']}/cohort.csv",
+                sep="|",
+                low_memory=False,
             )
 
         print("\n=== PHASE 3: TRAJECTORY & MEASUREMENT FORMATTING ===")
@@ -124,7 +118,8 @@ def main():
             "mechvent.csv", valid_stays, onset, time_col="charttime"
         )
 
-        # data_dict passes static demog info and secondary tables to the trajectory standardiser
+        # data_dict passes static demog info and secondary tables to
+        # the trajectory standardiser
         print("Loading secondary tables (fluid, vaso, UO, abx)...")
         data_dict = {
             "demog": load_and_filter_chunked("demog_processed.csv", valid_stays),

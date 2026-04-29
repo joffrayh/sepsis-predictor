@@ -10,9 +10,6 @@ This document describes how to set up the environment and run the full data proc
 |---|---|---|
 | Python | 3.11.x | Exactly 3.11 (< 3.12) |
 | [uv](https://docs.astral.sh/uv/) | latest | Package & venv manager |
-| PostgreSQL | ≥ 14 | Must be running locally |
-| `psql` / `createdb` | matching PG version | Must be on `$PATH` |
-| `zcat` / `gzip` | any | For streaming `.csv.gz` files |
 | MIMIC-IV access | v3.1 | Requires PhysioNet credentialed access |
 
 ---
@@ -53,39 +50,7 @@ This creates a `.venv/` and installs all dependencies declared in `pyproject.tom
 
 ---
 
-## Step 2 — Load MIMIC-IV into PostgreSQL
-
-The script `src/data_processing/load_mimic.sh` creates the database, downloads the official MIMIC-IV Postgres schema, and streams all `.csv.gz` files directly into the database without requiring a full local decompression.
-
-**Configure the connection** via environment variables (defaults shown):
-
-```bash
-export DB_NAME="mimiciv"      # database name to create
-export DB_USER="$USER"        # postgres user
-export DB_HOST="localhost"
-export DB_PORT="5432"
-```
-
-**Run the script:**
-
-```bash
-bash src/data_processing/load_mimic.sh
-# Optionally pass a custom data directory as the first argument:
-bash src/data_processing/load_mimic.sh /path/to/mimic-iv-3.1
-```
-
-What it does:
-
-1. Validates that `hosp/` and `icu/` subdirectories exist.
-2. Downloads `create.sql` from the [mimic-code](https://github.com/MIT-LCP/mimic-code) repo if not already cached in `src/data_processing/sql/`.
-3. Creates the `mimiciv` database (if absent) and runs `create.sql` to create the `mimiciv_hosp` and `mimiciv_icu` schemas (**drops and recreates them if they already exist**).
-4. Streams each `.csv.gz` via `zcat | psql \COPY` — no full decompression needed.
-
-Loading time is typically 30–90 minutes depending on disk speed.
-
----
-
-## Step 3 — Run the Data Pipeline
+## Step 2 — Run the Data Pipeline
 
 The pipeline is a single Python entry point that handles all three phases end-to-end, with idempotent checkpointing so that completed phases are not repeated on re-runs.
 
@@ -93,20 +58,15 @@ The pipeline is a single Python entry point that handles all three phases end-to
 cd /path/to/dissertation/code
 source .venv/bin/activate
 
-python src/data_processing/main.py \
-    -u <db_username> \
-    -p <db_password>
+# First run — extract from raw MIMIC-IV files:
+python src/data_processing/main_pipeline.py \
+    --raw-data-dir data/raw/mimic-iv-3.1
+
+# Subsequent runs — skip extraction (CSVs already exist):
+python src/data_processing/main_pipeline.py
 ```
 
-The `-u`/`-p` flags are only required the **first time** (Phase 1). On subsequent runs they can be omitted and the pipeline picks up from the last completed checkpoint.
-
-**Environment variable overrides for the database connection:**
-
-```bash
-export DB_HOST="localhost"   # default
-export DB_PORT="5432"        # default
-export DB_NAME="mimiciv"     # default
-```
+`--raw-data-dir` is only needed the **first time** (Phase 1). On subsequent runs it can be omitted and the pipeline picks up from the last completed checkpoint.
 
 ---
 
@@ -114,9 +74,11 @@ export DB_NAME="mimiciv"     # default
 
 ### Phase 1 — Extraction
 
-*Skipped automatically if credentials are not supplied.*
+*Skipped automatically if `--raw-data-dir` is not supplied.*
 
-`MIMICExtractor` (in `processing_pipeline/extraction/extractor.py`) runs 13 parameterised SQL queries defined in `processing_pipeline/extraction/extraction_metadata.json` against the loaded PostgreSQL database. It exports the following CSV files to `data/processed_files/`:
+`MIMICExtractor` (in `processing_pipeline/extraction/extractor.py`) opens an in-process DuckDB connection, registers every `.csv.gz` file under `hosp/` and `icu/` as a view under the `mimiciv_hosp` / `mimiciv_icu` schemas, then runs 13 parameterised SQL queries defined in `processing_pipeline/extraction/extraction_metadata.json`. No PostgreSQL server is required — DuckDB reads directly from the gzipped source files.
+
+Outputs to `data/processed_files/`:
 
 | File | Contents |
 |---|---|
