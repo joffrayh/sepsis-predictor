@@ -1,51 +1,89 @@
-import argparse
 import os
-import psycopg2 as pg
 import json
+import psycopg2 as pg
+from sqlalchemy import create_engine
 
-# define constants
-DBNAME = 'mimiciv'
-EXPORT_DIR = 'test'
 
-# parse arguments
-parser = argparse.ArgumentParser()
-parser.add_argument("-u", "--username", help="MIMIC Database Username", type=str, required=True)
-parser.add_argument("-p", "--password", help="MIMIC Database Password", type=str, default="")
-pargs = parser.parse_args()
+class MIMICExtractor:
+    """
+    A unified class to extract data from a MIMIC-IV PostgreSQL database.
+    Driven by extraction_metadata.json parameters to handle varying dataset sizes.
+    """
 
-# initialise database connection
-conn = pg.connect(F"dbname={DBNAME} user={pargs.username} host='localhost' options='--search_path=mimiciv' password={pargs.password}")
+    def __init__(
+        self,
+        user,
+        password="",
+        host="localhost",
+        dbname="mimiciv",
+        export_dir="processed_files",
+    ):
+        self.user = user
+        self.password = password
+        self.host = host
+        self.dbname = dbname
+        self.export_dir = os.path.join(os.getcwd(), export_dir)
 
-# create output dir
-exportdir = os.path.join(os.getcwd(), EXPORT_DIR)
-if not os.path.exists(exportdir):
-    os.makedirs(exportdir)
+        if not os.path.exists(self.export_dir):
+            os.makedirs(self.export_dir)
 
-# TODO need to change from absolute path to use current path (os.path....)
-# load metadata needed for extraction
-with open("src/MIMIC-sepsis/src/extraction/extraction_metadata.json", "r") as f:
-    extraction_metadata = json.load(f)
+        # Connect strictly with Psycopg2 for fast COPY commands
+        conn_string = f"dbname='{self.dbname}' user='{self.user}' host='{self.host}' options='--search_path=mimiciv,mimiciv_icu,mimiciv_hosp,public'"
+        if self.password:
+            conn_string += f" password='{self.password}'"
+        self.pg_conn = pg.connect(conn_string)
 
-# iterate through each etraction step needed
-with conn.cursor() as cur:
-    for data, metadata in extraction_metadata.items(): 
+        # Connect using SQLAlchemy for chunked Pandas reads when sorting is required
+        auth_string = f"{self.user}"
+        if self.password:
+            auth_string += f":{self.password}"
+        db_url = f"postgresql+psycopg2://{auth_string}@{self.host}/{self.dbname}"
+        self.alchemy_engine = create_engine(
+            db_url,
+            connect_args={"options": "-c search_path=mimiciv_hosp,mimiciv_icu,public"},
+        )
 
-        print(data)
-        print(metadata)
+    def extract_all(
+        self,
+        metadata_path="src/data_processing/processing_pipeline/extraction/extraction_metadata.json",
+        tables=None,
+    ):
+        """
+        Reads the metadata JSON and extracts every target.
+        If `tables` is provided, only extracts those specifically named.
+        """
+        with open(metadata_path, "r") as f:
+            metadata = json.load(f)
 
-        print(f"Extracting {metadata['extraction_text']}...")
+        for key, conf in metadata.items():
+            if tables and key not in tables:
+                continue
 
-        output_file = os.path.join(exportdir, metadata['file_name']+'.csv')
+            self.extract_table(key, conf)
 
-        with open(output_file, 'w') as f:
-            cur.copy_expert(
-                f"""
-                COPY (
-                    {metadata['query']}
+    def _execute_direct_copy(self, conf, output_csv):
+        """Fastest extraction method - writes direct from Postgres engine to disk."""
+        query = conf["query"]
+        with self.pg_conn.cursor() as cur:
+            with open(output_csv, "w") as f:
+                cur.copy_expert(
+                    f"COPY ({query}) TO STDOUT WITH CSV HEADER DELIMITER '|'", f
                 )
-                TO STDOUT WITH CSV HEADER DELIMITER '|'
-                """,
-                f
-            )
 
-        print(f"Success! {metadata['extraction_text']} saved to: {output_file}")
+    def extract_table(self, name, conf):
+        """Orchestrates individual table extraction based on the metadata rules."""
+        print(f"\n--- Extracting {name} ---")
+        output_csv = os.path.join(self.export_dir, f"{conf['file_name']}.csv")
+
+        if os.path.exists(output_csv):
+            print(f"Skipping {name}, target file already exists: {output_csv}")
+            return
+
+        # Standard extraction
+        print(f"Executing standard COPY for {name}...")
+        self._execute_direct_copy(conf, output_csv)
+        print(f"Success! Saved to {output_csv}")
+
+    def close(self):
+        self.pg_conn.close()
+        self.alchemy_engine.dispose()
