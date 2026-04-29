@@ -12,16 +12,15 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 # ── Config: Data & Model ───────────────────────────────────────────────────────
-DATA_PATH   = "/home/joffray/repos/uni/dissertation/code/src/demo_ui/test_set.parquet"
+DATA_PATH   = "/home/joffray/repos/uni/dissertation/code/src/demo_ui/test_set_new2.parquet"
 MODEL_PATH  = "/home/joffray/repos/uni/dissertation/code/mlruns/5/models/m-6f94a3404987472a88730dccbc5fd81d/artifacts/"
 
 PATIENT_ID_COL     = "stay_id"
 TIME_COL           = "timestep"
 TARGET_COL         = "target"
 N_DEMO_PATIENTS    = 5
-PREDICTION_HORIZON = 3 
-
-FEATURE_COLS = ["heart_rate", "respiratory_rate", "temp_C"]
+PREDICTION_HORIZON = 1
+PREDICTION_WINDOW  = 3
 
 # ── Config: UI & Styling ───────────────────────────────────────────────────────
 # Fonts
@@ -53,11 +52,13 @@ COLOR_RISK_LOW   = "#52c41a"
 COLOR_INFO       = "#58a6ff"
 
 FEATURE_COLORS   = ["#58a6ff", "#3fb950", "#d2a8ff", "#ffa657", "#79c0ff", "#56d364"]
-# --- Near your other Config constants ---
-FAKE_NAMES = [
-    "James", "Maria", "Robert", "Sarah", 
-    "Amina Yusuf", "David Miller", "Elena Rossi", "Liam O'Connor"
-]
+
+IDS_TO_NAMES = {
+    35134787: "Maria", 
+    38613519: "James", 
+    36349522: "Sarah", 
+    38787960: "David", 
+}
 
 # ───────────────────────────────────────────────────────────────────────────────
 
@@ -88,11 +89,7 @@ def load_model():
 @st.cache_data
 def load_data():
     df = pd.read_parquet(DATA_PATH).sort_values([PATIENT_ID_COL, TIME_COL])
-    pos_ids = df[df[TARGET_COL] == 1][PATIENT_ID_COL].unique()
-    neg_ids = df[df[TARGET_COL] == 0][PATIENT_ID_COL].unique()
-    rng = np.random.default_rng(42)
-    n_pos = min(3, len(pos_ids))
-    cohort = np.concatenate([rng.choice(pos_ids, size=n_pos, replace=False), rng.choice(neg_ids, size=N_DEMO_PATIENTS-n_pos, replace=False)])
+    cohort = IDS_TO_NAMES.keys()
     return df[df[PATIENT_ID_COL].isin(cohort)].copy()
 
 @st.cache_data
@@ -107,11 +104,6 @@ def get_predictions(_model, _df):
 def get_shap_explainer(_model):
     return shap.TreeExplainer(_model)
 
-@st.cache_data
-def get_id_to_name_map(patient_ids):
-    # Zip the IDs with names; if you have more IDs than names, it will cycle
-    return {pid: FAKE_NAMES[i % len(FAKE_NAMES)] for i, pid in enumerate(patient_ids)}
-
 model = load_model()
 df = load_data()
 preds, feature_cols = get_predictions(model, df)
@@ -123,14 +115,12 @@ with st.sidebar:
     st.markdown("---")
     patient_ids = sorted(preds[PATIENT_ID_COL].unique())
 
-    # Create the mapping
-    id_to_name = get_id_to_name_map(patient_ids)
 
 # Use format_func to show the name in the UI
     selected_id = st.selectbox(
         "Select Patient", 
         options=patient_ids, 
-        format_func=lambda x: id_to_name.get(x, f"Patient {x}")
+        format_func=lambda x: IDS_TO_NAMES.get(x, f"Patient {x}")
     )    
     p_preds_full = preds[preds[PATIENT_ID_COL] == selected_id].sort_values(TIME_COL)
     p_data_full  = df[df[PATIENT_ID_COL] == selected_id].sort_values(TIME_COL)
@@ -138,7 +128,7 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown('<div class="patient-header">SIMULATION CONTROL</div>', unsafe_allow_html=True)
-    current_t = st.select_slider("Current Simulation Hour", options=all_times, value=all_times[0])
+    current_t = st.select_slider("Current Simulation Timestep", options=all_times, value=all_times[0])
     selected_features = st.multiselect("Features to plot", options=feature_cols, default=None)
 
 p_preds = p_preds_full[p_preds_full[TIME_COL] <= current_t]
@@ -153,10 +143,22 @@ peak_risk    = p_preds["pred_prob"].max()
 final_risk   = p_preds["pred_prob"].iloc[-1]
 true_outcome = int(p_preds_full[TARGET_COL].max())
 
+# Timesteps where target==1: the window the model SHOULD predict high risk
+# (sepsis is 1–3 steps ahead, so these are the pre-onset alarm rows)
 onset_rows      = p_preds_full[p_preds_full[TARGET_COL] == 1]
-first_label_t   = onset_rows[TIME_COL].iloc[0] if not onset_rows.empty else None
-onset_window_t0 = first_label_t + 1 if first_label_t is not None else None
-onset_window_t1 = first_label_t + PREDICTION_HORIZON if first_label_t is not None else None
+if not onset_rows.empty:
+    onset_window_t0 = onset_rows[TIME_COL].min()   # first t where target=1
+    onset_window_t1 = min(onset_rows[TIME_COL].max(), onset_window_t0 + PREDICTION_WINDOW)   # last  t where target=1
+else:
+    onset_window_t0 = onset_window_t1 = None
+
+# --- Calculate Clinical Sepsis Window (sepsis > 0) ---
+sepsis_active_rows = p_data_full[p_data_full['sepsis'] > 0]
+if not sepsis_active_rows.empty:
+    sepsis_t0 = sepsis_active_rows[TIME_COL].min()
+    sepsis_t1 = sepsis_active_rows[TIME_COL].max()
+else:
+    sepsis_t0 = sepsis_t1 = None
 
 @st.cache_data
 def get_calibration(_model):
@@ -176,7 +178,7 @@ else:
     patient_auprc = None
 
 # ── Header ─────────────────────────────────────────────────────────────────────
-st.markdown(f"# {id_to_name[selected_id]}") # Changed from Patient {selected_id}
+st.markdown(f"# {IDS_TO_NAMES.get(selected_id, f'Patient {selected_id}')}")
 st.markdown(
     f'<div class="patient-header">'
     f'ID: {selected_id} | {gender_display} | Age {int(patient_age) if patient_age != "N/A" else "N/A"}'
@@ -203,16 +205,32 @@ full_x_range = [all_times.min(), all_times.max()]
 fig.add_trace(go.Scatter(x=p_preds[TIME_COL], y=p_preds["pred_prob"], fill="tozeroy",
                          line=dict(color=COLOR_RISK_HIGH, width=2.5), name="Risk Prob"), row=1, col=1,)
 
+
+
 if onset_window_t0 is not None:
     fig.add_vrect(
         x0=onset_window_t0, x1=onset_window_t1,
         fillcolor="rgba(250,173,20,0.2)",
         line=dict(color=COLOR_RISK_MED, width=2, dash="solid"),
-        annotation_text="SEPSIS",
-        annotation_position="top left",
+        annotation_text="TARGET WINDOW",
+        annotation_textangle=-90,
+        annotation_position="inside left",
         annotation_font=dict(color=COLOR_RISK_MED, size=PLOT_FONT_ANNOTATION, family="IBM Plex Mono"),
         row=1, col=1,
     )
+
+if sepsis_t0 is not None:
+    fig.add_vrect(
+        x0=sepsis_t0, x1=sepsis_t1,
+        fillcolor="rgba(88, 166, 255, 0.15)", # Using COLOR_INFO with transparency
+        line=dict(color=COLOR_INFO, width=2, dash="dot"),
+        annotation_text="SEPSIS",
+        annotation_textangle=-90,
+        annotation_position="inside left",
+        annotation_font=dict(color=COLOR_INFO, size=PLOT_FONT_ANNOTATION, family="IBM Plex Mono"),
+        row=1, col=1,
+    )
+
 
 fig.update_yaxes(range=[0, 1], row=1, col=1, tickfont=dict(size=PLOT_FONT_TICKS), title_text="Predicted Risk", title_font=dict(size=PLOT_FONT_MAIN))
 
