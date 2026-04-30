@@ -4,7 +4,7 @@ import os
 
 import pandas as pd
 from cohort_builder import build_and_save_cohorts
-from processing_pipeline.extraction.extractor import MIMICExtractor
+from data_processing.extraction.extractor import MIMICExtractor
 from trajectory_builder import (
     build_trajectories,
     load_and_filter_chunked,
@@ -148,7 +148,7 @@ def main():
         del ce_df, lab_df, mv_df, data_dict, onset
 
         out_dir = config["trajectories"]["output_dir"]
-        out_path = f"{out_dir}/patient_timeseries_cleaned_final.parquet"
+        out_path = f"{out_dir}/sepsis_trajectories_4h.parquet"
         print(f"Saving final cleaned FAIR dataset to: {out_path}")
         final_trajectories.to_parquet(out_path, engine="fastparquet")
         print("PIPELINE COMPLETE.")

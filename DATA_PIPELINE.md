@@ -213,7 +213,7 @@ These features encode the *pattern* of measurement, which is clinically informat
 The final dataset is saved to:
 
 ```
-data/processed_files/patient_timeseries_cleaned_final.parquet
+data/processed_files/sepsis_trajectories_4h.parquet
 ```
 
 Each row is one 4-hour timestep for one patient. Key columns:
@@ -250,7 +250,7 @@ The pipeline checks for the existence of intermediate files before each phase. T
 |---|---|
 | Phase 1 (Extraction) | Any file in `data/processed_files/` (e.g. `cohort.csv`) |
 | Phase 2 (Cohort) | `data/processed_files/cohort.csv` |
-| Phase 3 (Trajectories) | `data/processed_files/patient_timeseries_cleaned_final.parquet` |
+| Phase 3 (Trajectories) | `data/processed_files/sepsis_trajectories_4h.parquet` |
 
 ---
 

@@ -31,7 +31,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 def load_measurement_mappings():
-    with open(f"{BASE_DIR}/measurement_mappings.json") as f:
+    with open(f"{BASE_DIR}/configs/measurement_mappings.json") as f:
         measurements = json.load(f)
 
     code_to_concept = {}

@@ -5,7 +5,7 @@ import numpy as np
 from tqdm.auto import tqdm
 
 
-def handle_outliers(df, config_path="src/data_processing/cleaning_config.json"):
+def handle_outliers(df, config_path="src/data_processing/configs/cleaning_config.json"):
     print("Handling outliers in patient timeseries data via dynamic config")
 
     if not os.path.exists(config_path):
