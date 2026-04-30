@@ -173,21 +173,45 @@ def add_septic_shock_flag(df):
     shock as sepsis with persistent hypotension requiring vasopressors to
     maintain MAP ≥ 65 mm Hg, and having a serum lactate level > 2 mmol/L despite
     adequate volume resuscitation.
-    We will use the following logic to determine septic shock onset and censoring:
-    1. Patient has infection (onset_time is not NaN)
-    2. Calculate rolling fluids over a 12-hour window (3 time steps if using 4h timesteps).
-    3. Identify time steps where rolling fluids ≥ 2000 ml, MAP < 65 mm Hg,
-         and lactic acid > 2 mmol/L.
-    4. Mark the first time step meeting these criteria as septic shock onset (flag = 1).
-    5. Mark all subsequent time steps for that patient as septic shock (flag = 2)
-        to indicate censoring after onset.
+
+    Onset criteria (all must hold at the same timestep):
+
+    1. Active sepsis (``sepsis`` = 1 or 2).
+    2. MAP < 65 mmHg.
+    3. Lactate > 2 mmol/L.
+    4. Vasopressors active (``vaso_max`` > 0).
+    5. Rolling 12-hour fluid intake ≥ 2,000 mL (3 × 4 h timesteps), confirming
+       that hypotension persists despite adequate volume resuscitation.
+
+    Flags: 0 = no shock, 1 = onset timestep, 2 = post-onset censored.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Trajectory dataframe containing ``sepsis``, ``map``, ``lactate``,
+        ``vaso_max``, ``fluid_step``, ``stay_id``, and ``timestamp`` columns.
+
+    Returns
+    -------
+    pd.DataFrame
+        Input dataframe with ``septic_shock`` column added.
     """
     print("Adding septic shock flags...")
     df = df.sort_values(["stay_id", "timestamp"])
 
     has_sepsis = df["sepsis"].isin([1, 2])
 
-    shock_clinical_criteria = (df["lactate"] > 2.0) & (df["map"] < 65)
+    # Rolling 12-hour fluid sum (3 consecutive 4 h timesteps), per stay
+    df["fluid_rolling_12h"] = df.groupby("stay_id")["fluid_step"].transform(
+        lambda x: x.rolling(3, min_periods=1).sum()
+    )
+
+    shock_clinical_criteria = (
+        (df["map"] < 65)
+        & (df["lactate"] > 2.0)
+        & (df["vaso_max"] > 0)
+        & (df["fluid_rolling_12h"] >= 2000)
+    )
 
     shock_condition = has_sepsis & shock_clinical_criteria
 
@@ -199,7 +223,7 @@ def add_septic_shock_flag(df):
     censored_mask = (df["has_shock"] == 1) & (df["septic_shock"] == 0)
     df.loc[censored_mask, "septic_shock"] = 2
 
-    return df.drop(columns=["has_shock"])
+    return df.drop(columns=["has_shock", "fluid_rolling_12h"])
 
 
 def add_infection_and_sepsis_flag(df):
