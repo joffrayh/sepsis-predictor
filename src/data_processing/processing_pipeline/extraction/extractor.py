@@ -2,6 +2,8 @@ import glob
 import json
 import os
 import re
+import threading
+import time
 
 import duckdb
 
@@ -82,6 +84,76 @@ class MIMICExtractor:
         )
         return query.rstrip(";").strip()
 
+    def _run_with_timer(self, query, output_path):
+        """
+        Execute a DuckDB COPY query with a live elapsed-time and throughput display.
+
+        The ticker samples the output file size every 0.4 s and computes a
+        rolling write speed over a 5-sample window.  Both ``MB written`` and
+        ``MB/s`` are suppressed until the first bytes appear on disk (DuckDB
+        may buffer briefly before the first flush).
+
+        Parameters
+        ----------
+        query : str
+            Prepared SELECT query to execute.
+        output_path : str
+            Absolute path for the output CSV file.
+        """
+        done = threading.Event()
+        start = time.time()
+        spinner = "|/-\\"
+        _window = 5
+
+        def _ticker():
+            i = 0
+            samples = []
+            while not done.is_set():
+                elapsed = time.time() - start
+                try:
+                    written = os.path.getsize(output_path)
+                except OSError:
+                    written = 0
+
+                samples.append((time.time(), written))
+                if len(samples) > _window:
+                    samples.pop(0)
+
+                mb_written = written / 1_048_576
+                speed_str = ""
+                if len(samples) >= 2 and written > 0:
+                    dt = samples[-1][0] - samples[0][0]
+                    db = samples[-1][1] - samples[0][1]
+                    if dt > 0 and db > 0:
+                        speed_str = f" | {(db / 1_048_576) / dt:.1f} MB/s"
+
+                mb_str = f" | {mb_written:.1f} MB written" if written > 0 else ""
+                line = (
+                    f"\r  {spinner[i % len(spinner)]} "
+                    f"{elapsed:.0f}s{mb_str}{speed_str}   "
+                )
+                print(line, end="", flush=True)
+                time.sleep(0.4)
+                i += 1
+
+        t = threading.Thread(target=_ticker, daemon=True)
+        t.start()
+        try:
+            self.conn.execute(
+                f"COPY ({query}) TO '{output_path}' (HEADER, DELIMITER '|')"
+            )
+        finally:
+            done.set()
+            t.join()
+
+        elapsed = time.time() - start
+        try:
+            final_mb = os.path.getsize(output_path) / 1_048_576
+            size_str = f" | {final_mb:.1f} MB"
+        except OSError:
+            size_str = ""
+        print(f"\r  done in {elapsed:.1f}s{size_str}                    ")
+
     def extract_all(
         self,
         metadata_path="src/data_processing/processing_pipeline/extraction/extraction_metadata.json",
@@ -100,12 +172,12 @@ class MIMICExtractor:
         with open(metadata_path) as f:
             metadata = json.load(f)
 
-        for key, conf in metadata.items():
-            if tables and key not in tables:
-                continue
-            self.extract_table(key, conf)
+        items = [(k, v) for k, v in metadata.items() if not tables or k in tables]
+        total = len(items)
+        for idx, (key, conf) in enumerate(items, start=1):
+            self.extract_table(key, conf, index=idx, total=total)
 
-    def extract_table(self, name, conf):
+    def extract_table(self, name, conf, index=None, total=None):
         """
         Extract a single table to a pipe-delimited CSV file.
 
@@ -115,20 +187,25 @@ class MIMICExtractor:
             Logical name of the table (used for logging).
         conf : dict
             Table configuration entry from extraction_metadata.json.
+        index : int, optional
+            1-based position of this table in the extraction sequence.
+        total : int, optional
+            Total number of tables being extracted in this run.
         """
-        print(f"\n--- Extracting {name} ---")
+        counter = f" [{index}/{total}]" if index is not None else ""
+        print(f"\n--- Extracting {name}{counter} ---")
         output_csv = os.path.join(self.export_dir, f"{conf['file_name']}.csv")
 
         if os.path.exists(output_csv):
-            print(f"Skipping {name}, target file already exists: {output_csv}")
+            print(f"  Skipping — output already exists: {output_csv}")
             return
 
         query = self._prepare_query(conf["query"])
         output_path = os.path.abspath(output_csv).replace("\\", "/")
 
-        print(f"Executing DuckDB query for {name}...")
-        self.conn.execute(f"COPY ({query}) TO '{output_path}' (HEADER, DELIMITER '|')")
-        print(f"Success! Saved to {output_csv}")
+        print("  Running query...")
+        self._run_with_timer(query, output_path)
+        print(f"  Saved to {output_csv}")
 
     def close(self):
         """Close the DuckDB connection."""
