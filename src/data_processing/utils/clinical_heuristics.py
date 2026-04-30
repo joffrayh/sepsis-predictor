@@ -60,7 +60,6 @@ def handle_outliers(df, config_path="src/data_processing/cleaning_config.json"):
         # 5. Transformations
         transform = rules.get("transform")
         if transform == "log1p":
-            print(f"	Applying log1p transform to {col}")
             df[col] = np.log1p(df[col])
 
     # SpO2: two-step rule matching old pipeline
@@ -101,8 +100,6 @@ def estimate_gcs_from_rass(df):
     mask = df["gcs"].isna()
     df.loc[mask, "gcs"] = df.loc[mask, "richmond_ras"].map(mappings)
 
-    print("\tCompleted GCS estimation from RASS.")
-
     return df
 
 
@@ -113,38 +110,29 @@ def estimate_fio2(df):
     """
     print("Estimating FiO2...")
 
-    flow_columns = ["oxygen_flow", "oxygen_flow_cannula_rate", "oxygen_flow_rate"]
-    df["combined_o2_flow"] = df[flow_columns].bfill(axis=1).iloc[:, 0]
-
-    # function to set fio2 based on flow thresholds for a given mask and device type
-    def set_fio2_by_flow(mask, flow_thresholds, fio2_values):
-        df_subset = df[mask].copy()
-        df_subset["fio2"] = None
-        # for each threshold, set fio2 for rows with flow <= threshold,
-        # starting from highest threshold
-        for threshold, fio2 in zip(flow_thresholds, fio2_values):
-            flow_mask = df_subset["combined_o2_flow"] <= threshold
-            df_subset.loc[flow_mask, "fio2"] = fio2
-        df.loc[mask, "fio2"] = df_subset["fio2"]
+    # keep flow as a local Series — never write it into df to avoid block consolidation copies
+    flow = df["oxygen_flow"].fillna(df["oxygen_flow_cannula_rate"]).fillna(df["oxygen_flow_rate"])
 
     # for simple flow devices (e.g. nasal cannula), use these flow-to-FiO2 mappings based on clinical estimates
     mask = (
         (df["fio2"].isna())
-        & (df["combined_o2_flow"].notna())
+        & (flow.notna())
         & (df["oxygen_flow_device"].isin(["0", "2"]))
     )
     if mask.any():
-        set_fio2_by_flow(
-            mask,
+        # iterate high-to-low: each pass overwrites rows ≤ threshold, so the
+        # last match (smallest threshold ≥ flow) wins — same logic as original
+        for threshold, fio2_val in zip(
             [15, 12, 10, 8, 6, 5, 4, 3, 2, 1],
             [70, 62, 55, 50, 44, 40, 36, 32, 28, 24],
-        )
+        ):
+            df.loc[mask & (flow <= threshold), "fio2"] = fio2_val
 
     # for patients with missing FiO2 but no flow recorded,
     # if device is simple (e.g. nasal cannula) we can assume room air (21% FiO2)
     mask = (
         (df["fio2"].isna())
-        & (df["combined_o2_flow"].isna())
+        & (flow.isna())
         & (df["oxygen_flow_device"].isin(["0", "2"]))
     )
     df.loc[mask, "fio2"] = 21
@@ -153,57 +141,51 @@ def estimate_fio2(df):
     face_mask_types = ["3", "4", "5", "6", "8", "9", "10", "11", "12"]
     mask = (
         (df["fio2"].isna())
-        & (df["combined_o2_flow"].notna())
+        & (flow.notna())
         & (df["oxygen_flow_device"].isin(face_mask_types))
     )
     if mask.any():
-        set_fio2_by_flow(mask, [15, 12, 10, 8, 6, 4], [75, 69, 66, 58, 40, 36])
+        for threshold, fio2_val in zip(
+            [15, 12, 10, 8, 6, 4],
+            [75, 69, 66, 58, 40, 36],
+        ):
+            df.loc[mask & (flow <= threshold), "fio2"] = fio2_val
 
     # for high flow devices, use these flow-to-FiO2 mappings based on clinical estimates
     mask = (
         (df["fio2"].isna())
-        & (df["combined_o2_flow"].notna())
+        & (flow.notna())
         & (df["oxygen_flow_device"] == "7")
     )
     if mask.any():
-        df_subset = df[mask].copy()
-        flow = df_subset["combined_o2_flow"]
-        df_subset.loc[flow >= 15, "fio2"] = 100
-        df_subset.loc[(flow >= 10) & (flow < 15), "fio2"] = 90
-        df_subset.loc[(flow < 10) & (flow > 8), "fio2"] = 80
-        df_subset.loc[(flow <= 8) & (flow > 6), "fio2"] = 70
-        df_subset.loc[flow <= 6, "fio2"] = 60
-        df.loc[mask, "fio2"] = df_subset["fio2"]
+        df.loc[mask & (flow >= 15), "fio2"] = 100
+        df.loc[mask & (flow >= 10) & (flow < 15), "fio2"] = 90
+        df.loc[mask & (flow < 10) & (flow > 8), "fio2"] = 80
+        df.loc[mask & (flow <= 8) & (flow > 6), "fio2"] = 70
+        df.loc[mask & (flow <= 6), "fio2"] = 60
 
     # for high flow face mask devices, use these flow-to-FiO2 mappings based on clinical estimates
     mask = (
         (df["fio2"].isna())
-        & (df["combined_o2_flow"].notna())
+        & (flow.notna())
         & (df["oxygen_flow_device"] == "13")
     )
     if mask.any():
-        df_subset = df[mask].copy()
-        flow = df_subset["combined_o2_flow"]
-        df_subset.loc[flow >= 15, "fio2"] = 100
-        df_subset.loc[(flow >= 10) & (flow < 15), "fio2"] = 80
-        df_subset.loc[flow < 10, "fio2"] = 60
-        df.loc[mask, "fio2"] = df_subset["fio2"]
+        df.loc[mask & (flow >= 15), "fio2"] = 100
+        df.loc[mask & (flow >= 10) & (flow < 15), "fio2"] = 80
+        df.loc[mask & (flow < 10), "fio2"] = 60
 
     # for simple face mask devices, use these flow-to-FiO2 mappings based on clinical estimates
     mask = (
         (df["fio2"].isna())
-        & (df["combined_o2_flow"].notna())
+        & (flow.notna())
         & (df["oxygen_flow_device"] == "14")
     )
     if mask.any():
-        df_subset = df[mask].copy()
-        flow = df_subset["combined_o2_flow"]
-        df_subset.loc[flow >= 10, "fio2"] = 80
-        df_subset.loc[(flow >= 5) & (flow < 10), "fio2"] = 60
-        df_subset.loc[flow < 5, "fio2"] = 40
-        df.loc[mask, "fio2"] = df_subset["fio2"]
+        df.loc[mask & (flow >= 10), "fio2"] = 80
+        df.loc[mask & (flow >= 5) & (flow < 10), "fio2"] = 60
+        df.loc[mask & (flow < 5), "fio2"] = 40
 
-    df = df.drop("combined_o2_flow", axis=1)
     return df
 
 

@@ -123,6 +123,7 @@ def calculate_derived_variables(df):
     ).astype(int)
     sirs["wbc"] = ((df["wbc"] >= 12) | (df["wbc"] < 4)).astype(int)
     df["sirs_score"] = sirs.sum(axis=1)
+    del sirs
 
     return df
 

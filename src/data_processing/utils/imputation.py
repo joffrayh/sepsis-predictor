@@ -8,9 +8,7 @@ from tqdm.auto import tqdm
 def sample_and_hold(df, vitalslab_hold):
     print("Performing sample and hold interpolation...")
 
-    # ensure correct ordering before forward-fill logic
-    df = df.sort_values(["stay_id", "charttime"]).reset_index(drop=True)
-
+    # wide_data is already sorted by (stay_id, charttime) from process_patient_measurements_vectorized
     cols_to_process = [
         col
         for col in vitalslab_hold
@@ -23,19 +21,10 @@ def sample_and_hold(df, vitalslab_hold):
         # for each row, record the charttime of the last valid (non-NaN) measurement
         # within the same stay, then only carry the value forward if it's within
         # the hold period
-        last_valid_time = (
-            df[["stay_id", "charttime", col]]
-            .where(df[col].notna())  # NaN out rows where col is missing
-            .groupby(df["stay_id"])["charttime"]
-            .transform(lambda x: x.ffill())  # forward fill the charttime of last valid
-        )
+        last_valid_time = df["charttime"].where(
+            df[col].notna()).groupby(df["stay_id"]).transform("ffill")
 
-        last_valid_value = (
-            df.groupby("stay_id")[col].transform(
-                lambda x: x.ffill()
-            )  # forward fill the value itself
-        )
-
+        last_valid_value = df.groupby("stay_id")[col].transform("ffill")
         # only apply the held value where:
         # 1. the original value is NaN (it's a gap)
         # 2. the last valid measurement is within the hold period
@@ -133,7 +122,7 @@ def handle_missing_values(df, missing_threshold=0.8):
         # each chunk contains whole patients and grows until it reaches chunk_size rows
         print("\tBuilding patient-aligned chunks for KNN...")
         patient_groups = df.groupby("stay_id", sort=False).apply(
-            lambda x: x.index.tolist()
+            lambda x: x.index.tolist(), include_groups=False
         )
         chunks = []
         current_chunk = []

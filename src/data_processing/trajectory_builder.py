@@ -1,7 +1,10 @@
 import json
 import math
 import os
+import shutil
+import warnings
 
+import fastparquet
 import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
@@ -28,8 +31,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 def load_measurement_mappings():
-    print("Loading measurement mappings")
-    with open(f"{BASE_DIR}/ReferenceFiles/measurement_mappings.json") as f:
+    with open(f"{BASE_DIR}/measurement_mappings.json") as f:
         measurements = json.load(f)
 
     code_to_concept = {}
@@ -59,7 +61,7 @@ def load_and_filter_chunked(
     to our target patients or target time windows.
     This saves huge RAM compared to old function.
     """
-    filepath = f"processed_files/{filename}"
+    filepath = f"data/processed_files/{filename}"
     if not os.path.exists(filepath):
         print(f"Warning: {filepath} not found.")
         return pd.DataFrame()
@@ -106,19 +108,22 @@ def load_and_filter_chunked(
 
 
 def process_patient_measurements_vectorized(
-    ce_df, lab_df, mv_df, code_to_concept, batch_size=500, output_dir="processed_files"
+    ce_df, lab_df, mv_df, code_to_concept, batch_size=500, output_dir="data/processed_files"
 ):
     print("Pivoting chartevents, lab events and mechvent...")
 
+    # build int-keyed map once to avoid allocating object-dtype string Series per .map() call
+    int_code_to_concept = {int(k): v for k, v in code_to_concept.items()}
+
     if not ce_df.empty:
         print("\tMapping chartevents itemids to concepts...")
-        ce_df["concept"] = ce_df["itemid"].astype(str).map(code_to_concept)
+        ce_df["concept"] = ce_df["itemid"].map(int_code_to_concept)
     else:
         print("WARNING: chartevents dataframe is empty.")
 
     if not lab_df.empty:
         print("\tMapping labevents itemids to concepts...")
-        lab_df["concept"] = lab_df["itemid"].astype(str).map(code_to_concept)
+        lab_df["concept"] = lab_df["itemid"].map(int_code_to_concept)
     else:
         print("WARNING: labevents dataframe is empty.")
 
@@ -138,6 +143,11 @@ def process_patient_measurements_vectorized(
     # free the input frames now they're combined
     del ce_df, lab_df
 
+    # sort on the 4-column long frame now (cheap) so wide_data comes out ordered
+    # and sample_and_hold can skip its expensive sort on the 70-column wide frame
+    ce_lab.sort_values(["stay_id", "charttime"], inplace=True)
+    ce_lab.reset_index(drop=True, inplace=True)
+
     all_stay_ids = ce_lab["stay_id"].unique()
     batches = [
         all_stay_ids[i : i + batch_size]
@@ -147,7 +157,13 @@ def process_patient_measurements_vectorized(
 
     temp_dir = os.path.join(output_dir, "_pivot_temp")
     os.makedirs(temp_dir, exist_ok=True)
-    batch_paths = []
+    consolidated_path = os.path.join(temp_dir, "pivot_consolidated.parquet")
+    first_batch = True
+
+    # derive fixed column schema from all possible concepts so every batch
+    # has identical columns regardless of which concepts appear in that batch
+    all_concepts = sorted(set(int_code_to_concept.values()))
+    fixed_columns = ["stay_id", "charttime"] + all_concepts
 
     for i, batch_stays in enumerate(
         tqdm(batches, desc="\tPivoting batches", ncols=100)
@@ -164,28 +180,28 @@ def process_patient_measurements_vectorized(
         ).reset_index()
         wide.columns.name = None
 
-        path = os.path.join(temp_dir, f"batch_{i}.parquet")
-        wide.to_parquet(path, compression="zstd")
-        batch_paths.append(path)
+        # reindex to fixed schema so all batches have identical columns for append
+        wide = wide.reindex(columns=fixed_columns)
+
+        # append each batch into a single file to avoid loading all into RAM at once
+        fastparquet.write(
+            consolidated_path,
+            wide,
+            compression="ZSTD",
+            append=not first_batch,
+        )
+        first_batch = False
 
         # explicitly free batch memory before next iteration
         del wide, batch
 
     del ce_lab
 
-    print("\tConcatenating batches from disk...")
-    wide_data = pd.concat(
-        [
-            pd.read_parquet(p)
-            for p in tqdm(batch_paths, desc="\tReading batches", ncols=100)
-        ],
-        ignore_index=True,
-    )
+    print("\tReading consolidated pivot file from disk...")
+    wide_data = pd.read_parquet(consolidated_path, engine="fastparquet")
 
-    # clean up temp files
-    for p in batch_paths:
-        os.remove(p)
-    os.rmdir(temp_dir)
+    # clean up temp dir
+    shutil.rmtree(temp_dir)
 
     # add mechvent
     if not mv_df.empty:
@@ -193,9 +209,13 @@ def process_patient_measurements_vectorized(
         mv_clean = mv_df[["stay_id", "charttime", "mechvent"]].drop_duplicates(
             subset=["stay_id", "charttime"], keep="last"
         )
-        wide_data = pd.merge(
-            wide_data, mv_clean, on=["stay_id", "charttime"], how="outer"
-        )
+        del mv_df
+        
+        mv_map = mv_clean.set_index(["stay_id", "charttime"])["mechvent"]
+        del mv_clean
+
+        idx = pd.MultiIndex.from_arrays([wide_data["stay_id"], wide_data["charttime"]])
+        wide_data["mechvent"] = idx.map(mv_map)
     else:
         print("WARNING: mechvent dataframe is empty.")
         wide_data["mechvent"] = np.nan
@@ -210,7 +230,7 @@ def standardize_patient_trajectories(
     timestep=4,
     window_before=24,
     window_after=72,
-    output_dir="processed_files",
+    output_dir="data/processed_files",
     flush_every=5000,
 ):
     """
@@ -221,29 +241,30 @@ def standardize_patient_trajectories(
     """
     print("Standardising trajectories to fixed time step...")
 
-    # create hash maps for the secondary tables
+    # create hash maps for the secondary tables — pop each entry from data_dict
+    # immediately after converting so the raw DataFrames are freed before the loop
     fluid_grp = (
-        {k: v for k, v in data_dict["fluid"].groupby("stay_id")}
+        {k: v for k, v in data_dict.pop("fluid").groupby("stay_id")}
         if "fluid" in data_dict
         else {}
     )
     vaso_grp = (
-        {k: v for k, v in data_dict["vaso"].groupby("stay_id")}
+        {k: v for k, v in data_dict.pop("vaso").groupby("stay_id")}
         if "vaso" in data_dict
         else {}
     )
     uo_grp = (
-        {k: v for k, v in data_dict["UO"].groupby("stay_id")}
+        {k: v for k, v in data_dict.pop("UO").groupby("stay_id")}
         if "UO" in data_dict
         else {}
     )
     abx_grp = (
-        {k: v for k, v in data_dict["abx"].groupby("stay_id")}
+        {k: v for k, v in data_dict.pop("abx").groupby("stay_id")}
         if "abx" in data_dict
         else {}
     )
     demog_dict = (
-        data_dict["demog"].set_index("stay_id").to_dict("index")
+        data_dict.pop("demog").set_index("stay_id").to_dict("index")
         if "demog" in data_dict
         else {}
     )
@@ -281,17 +302,25 @@ def standardize_patient_trajectories(
 
     processed_data = []
     flush_count = 0
+    na_mean_count = 0
     temp_dir = os.path.join(output_dir, "_std_temp")
     os.makedirs(temp_dir, exist_ok=True)
     temp_paths = []
 
-    grouped_traj = init_traj.groupby("stay_id")
+    # use np.unique-based group boundaries instead of groupby — avoids building
+    # the full 85K-entry index dict that causes OOM before the first iteration.
+    # init_traj is pre-sorted by (stay_id, charttime) so groups are contiguous.
+    stay_ids_arr = init_traj["stay_id"].to_numpy()
+    unique_stay_ids, first_occurrence = np.unique(stay_ids_arr, return_index=True)
+    group_boundaries = np.append(first_occurrence, len(init_traj))
+    del stay_ids_arr
 
     # for each patient trajectory, create fixed time steps relative to
     # ICU admission time (anchor_time) and estimate measurements within each step
-    for stay_id, patient_traj in tqdm(
-        grouped_traj, desc="\tStandardising per stay_id", ncols=150
-    ):
+    for i, stay_id in enumerate(tqdm(
+        unique_stay_ids, desc="\tStandardising per stay_id", ncols=100
+    )):
+        patient_traj = init_traj.iloc[group_boundaries[i]:group_boundaries[i + 1]]
         start_time = anchor_dict.get(stay_id, 0)
         onset_time = onset_time_dict.get(stay_id, np.nan)
         demographics = demog_dict.get(stay_id, {})
@@ -300,13 +329,15 @@ def standardize_patient_trajectories(
         vaso_data = vaso_grp.get(stay_id, pd.DataFrame())
         uo_data = uo_grp.get(stay_id, pd.DataFrame())
         abx_data = abx_grp.get(stay_id, pd.DataFrame())
+        first_abx_time = abx_data["starttime"].min() if not abx_data.empty else np.nan
 
-        patient_times = sorted(patient_traj["charttime"].unique())
-        if not patient_times:
+        # no sort needed — init_traj is pre-sorted by (stay_id, charttime)
+        ct_arr = patient_traj["charttime"].to_numpy()
+        if len(ct_arr) == 0:
             continue
 
-        first_time = max(patient_times[0], start_time - window_before * 3600)
-        last_time = min(patient_times[-1], start_time + window_after * 3600)
+        first_time = max(ct_arr[0], start_time - window_before * 3600)
+        last_time = min(ct_arr[-1], start_time + window_after * 3600)
 
         num_timesteps = math.ceil((last_time - first_time) / (timestep * 3600))
 
@@ -317,11 +348,10 @@ def standardize_patient_trajectories(
             if window_end < first_time or window_start > last_time:
                 continue
 
-            # measurements: mean of all readings within the window, else NaN
-            mask = (patient_traj["charttime"] >= window_start) & (
-                patient_traj["charttime"] < window_end
-            )
-            window_data = patient_traj[mask]
+            # measurements: binary search on sorted charttime
+            lo = np.searchsorted(ct_arr, window_start, side="left")
+            hi = np.searchsorted(ct_arr, window_end, side="left")
+            window_data = patient_traj.iloc[lo:hi]
             if len(window_data) == 0:
                 measurements = {
                     col: np.nan
@@ -329,7 +359,10 @@ def standardize_patient_trajectories(
                     if col not in ["stay_id", "charttime"]
                 }
             else:
-                measurements = window_data.mean(axis=0, skipna=True).to_dict()
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always", RuntimeWarning)
+                    measurements = window_data.mean(axis=0, skipna=True).to_dict()
+                na_mean_count += sum(1 for w in caught if issubclass(w.category, RuntimeWarning))
 
             # fluids
             fluid_total, fluid_step = 0, 0
@@ -372,7 +405,6 @@ def standardize_patient_trajectories(
                 if len(w_abx) > 0:
                     abx_given = 1
                     num_abx = len(w_abx["drug"].unique())
-                first_abx_time = abx_data["starttime"].min()
                 if pd.notna(first_abx_time):
                     hrs_first_abx = (window_end - first_abx_time) / 3600
 
@@ -416,6 +448,7 @@ def standardize_patient_trajectories(
         )
         temp_paths.append(path)
 
+    print(f"\tStandardisation finished with {na_mean_count} NaN means encountered.")
     print("\tConcatenating standardized chunks...")
     result = pd.concat(
         [
@@ -453,6 +486,8 @@ def build_trajectories(
     init_traj = process_patient_measurements_vectorized(
         ce_df, lab_df, mv_df, code_to_concept, output_dir=output_dir
     )
+    del ce_df, lab_df, mv_df
+
     if init_traj.empty:
         print("No valid trajectories found matching criteria.")
         return pd.DataFrame()
@@ -479,8 +514,7 @@ def build_trajectories(
     init_traj = add_missingness_features(
         init_traj, timestep_hours=config.get("timestep", 4)
     )
-
-    # 5. Imputation
+    # 5. Imputation2
     init_traj = handle_missing_values(init_traj, config.get("missing_threshold", 0.8))
 
     # 6. Labels & Derived Variables

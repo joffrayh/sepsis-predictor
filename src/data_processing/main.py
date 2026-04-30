@@ -145,6 +145,8 @@ def main():
             config["trajectories"],
         )
 
+        del ce_df, lab_df, mv_df, data_dict, onset
+
         out_dir = config["trajectories"]["output_dir"]
         out_path = f"{out_dir}/patient_timeseries_cleaned_final.parquet"
         print(f"Saving final cleaned FAIR dataset to: {out_path}")
