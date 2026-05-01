@@ -309,7 +309,6 @@ def standardise_patient_trajectories(
 
     processed_data = []
     flush_count = 0
-    na_mean_count = 0
     temp_dir = os.path.join(output_dir, "_std_temp")
     os.makedirs(temp_dir, exist_ok=True)
     temp_paths = []
@@ -366,12 +365,9 @@ def standardise_patient_trajectories(
                     if col not in ["stay_id", "charttime"]
                 }
             else:
-                with warnings.catch_warnings(record=True) as caught:
-                    warnings.simplefilter("always", RuntimeWarning)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", RuntimeWarning)
                     measurements = window_data.mean(axis=0, skipna=True).to_dict()
-                na_mean_count += sum(
-                    1 for w in caught if issubclass(w.category, RuntimeWarning)
-                )
 
             # fluids
             fluid_total, fluid_step = 0, 0
@@ -457,7 +453,6 @@ def standardise_patient_trajectories(
         )
         temp_paths.append(path)
 
-    print(f"\tStandardisation finished with {na_mean_count} NaN means encountered.")
     print("\tConcatenating standardised chunks...")
     result = pd.concat(
         [
