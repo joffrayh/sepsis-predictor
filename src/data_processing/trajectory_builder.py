@@ -219,7 +219,8 @@ def process_patient_measurements(
             "chartevents dataframe is empty — check extracted_dir path and Phase 1 output."
         )
     print("\tMapping chartevents itemids to concepts...")
-    ce_df["concept"] = ce_df["itemid"].map(code_to_concept)
+    int_code_to_concept = {int(k): v for k, v in code_to_concept.items()}
+    ce_df["concept"] = ce_df["itemid"].map(int_code_to_concept)
 
     if lab_df.empty:
         raise ValueError(
@@ -227,7 +228,7 @@ def process_patient_measurements(
         )
 
     print("\tMapping labevents itemids to concepts...")
-    lab_df["concept"] = lab_df["itemid"].map(code_to_concept)
+    lab_df["concept"] = lab_df["itemid"].map(int_code_to_concept)
 
     print("\tJoining chartevents and labevents...")
     ce_lab = pd.concat(
