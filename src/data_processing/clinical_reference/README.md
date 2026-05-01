@@ -56,7 +56,7 @@ To change these rules, edit `utils/clinical_heuristics.py` directly.
 
 Drives two pipeline steps:
 
-- **Step 3b** (`process_patient_measurements_vectorized`) — maps raw MIMIC-IV `itemid` codes to named concept columns during the pivot.
+- **Step 3b** (`process_patient_measurements`) — maps raw MIMIC-IV `itemid` codes to named concept columns during the pivot.
 - **Step 3f** (`sample_and_hold`) — provides the `hold_time` per concept for forward-fill imputation.
 
 Each key is the output column name. The supported fields are:

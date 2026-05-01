@@ -22,7 +22,7 @@ def calculate_derived_variables(df):
     df.loc[np.isinf(df["shock_index"]), "shock_index"] = np.nan
     df["shock_index"] = df["shock_index"].fillna(df["shock_index"].mean())
 
-    # SOFA respiratory — vectorised pd.cut
+    # SOFA respiratory 
     pf = df["pf_ratio"]
     df["sofa_resp"] = (
         pd.cut(
@@ -114,7 +114,7 @@ def calculate_derived_variables(df):
         + df["sofa_renal"]
     )
 
-    # SIRS — vectorised
+    # SIRS
     sirs = pd.DataFrame(index=df.index)
     sirs["temp"] = ((df["temp_C"] >= 38) | (df["temp_C"] <= 36)).astype(int)
     sirs["hr"] = (df["heart_rate"] > 90).astype(int)
@@ -128,19 +128,17 @@ def calculate_derived_variables(df):
     return df
 
 
-def apply_exclusion_criteria(df, exclusion_cfg=None):
+def apply_exclusion_criteria(df, exclusion_cfg):
     """
     Apply exclusion criteria to filter out patients who do not meet the study
-    criteria. Everything is vectorised. The exclusion criteria include:
+    criteria. The exclusion criteria include:
     1. Extreme UO (>12000 ml in a 4h window)
     2. Extreme Fluid (>10000 ml in a 4h window)
     3. Early Death (death within 24 hours of first measurement)
     """
-    if exclusion_cfg is None:
-        exclusion_cfg = {}
-    max_uo = exclusion_cfg.get("max_uo_per_window_ml", 12000)
-    max_fluid = exclusion_cfg.get("max_fluid_per_window_ml", 10000)
-    early_death_hours = exclusion_cfg.get("early_death_hours", 24)
+    max_uo = exclusion_cfg["max_uo_per_window_ml"]
+    max_fluid = exclusion_cfg["max_fluid_per_window_ml"]
+    early_death_hours = exclusion_cfg["early_death_hours"]
 
     print("Applying exclusion criteria...")
     excluded_counts = {}
@@ -155,7 +153,7 @@ def apply_exclusion_criteria(df, exclusion_cfg=None):
     df = df[~df["stay_id"].isin(extreme_fluid_stays)]
     excluded_counts["extreme_fluid"] = len(extreme_fluid_stays)
 
-    # 3. Early Death (vectorised)
+    # 3. Early Death
     first_times = df.groupby("stay_id")["timestamp"].min()
     last_times = df.groupby("stay_id")["timestamp"].max()
     morta = df.groupby("stay_id")["morta_hosp"].first()
@@ -173,7 +171,7 @@ def apply_exclusion_criteria(df, exclusion_cfg=None):
     return df
 
 
-def add_septic_shock_flag(df, shock_cfg=None):
+def add_septic_shock_flag(df, shock_cfg):
     """
     Add septic shock flags based on the Sepsis-3 criteria, which defines septic
     shock as sepsis with persistent hypotension requiring vasopressors to
@@ -196,8 +194,8 @@ def add_septic_shock_flag(df, shock_cfg=None):
     df : pd.DataFrame
         Trajectory dataframe containing ``sepsis``, ``map``, ``lactate``,
         ``vaso_max``, ``fluid_step``, ``stay_id``, and ``timestamp`` columns.
-    shock_cfg : dict, optional
-        Config overrides. Keys: ``map_threshold_mmhg``, ``lactate_threshold_mmol``,
+    shock_cfg : dict
+        Config dict. Keys: ``map_threshold_mmhg``, ``lactate_threshold_mmol``,
         ``fluid_resuscitation_ml``, ``fluid_window_timesteps``.
 
     Returns
@@ -205,12 +203,10 @@ def add_septic_shock_flag(df, shock_cfg=None):
     pd.DataFrame
         Input dataframe with ``septic_shock`` column added.
     """
-    if shock_cfg is None:
-        shock_cfg = {}
-    map_threshold = shock_cfg.get("map_threshold_mmhg", 65)
-    lactate_threshold = shock_cfg.get("lactate_threshold_mmol", 2.0)
-    fluid_ml = shock_cfg.get("fluid_resuscitation_ml", 2000)
-    fluid_window = shock_cfg.get("fluid_window_timesteps", 3)
+    map_threshold = shock_cfg["map_threshold_mmhg"]
+    lactate_threshold = shock_cfg["lactate_threshold_mmol"]
+    fluid_ml = shock_cfg["fluid_resuscitation_ml"]
+    fluid_window = shock_cfg["fluid_window_timesteps"]
 
     print("Adding septic shock flags...")
     df = df.sort_values(["stay_id", "timestamp"])

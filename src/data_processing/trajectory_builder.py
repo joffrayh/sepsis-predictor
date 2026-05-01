@@ -105,7 +105,7 @@ def load_and_filter_chunked(
     return pd.DataFrame()
 
 
-def process_patient_measurements_vectorized(
+def process_patient_measurements(
     ce_df,
     lab_df,
     mv_df,
@@ -119,17 +119,20 @@ def process_patient_measurements_vectorized(
     # build int-keyed map once to avoid allocating object-dtype string Series per .map() call
     int_code_to_concept = {int(k): v for k, v in code_to_concept.items()}
 
-    if not ce_df.empty:
-        print("\tMapping chartevents itemids to concepts...")
-        ce_df["concept"] = ce_df["itemid"].map(int_code_to_concept)
-    else:
-        print("WARNING: chartevents dataframe is empty.")
+    if ce_df.empty:
+        raise ValueError(
+            "chartevents dataframe is empty — check extracted_dir path and Phase 1 output."
+        )
+    print("\tMapping chartevents itemids to concepts...")
+    ce_df["concept"] = ce_df["itemid"].map(int_code_to_concept)
 
-    if not lab_df.empty:
-        print("\tMapping labevents itemids to concepts...")
-        lab_df["concept"] = lab_df["itemid"].map(int_code_to_concept)
-    else:
-        print("WARNING: labevents dataframe is empty.")
+    if lab_df.empty:
+        raise ValueError(
+            "labevents (labu) dataframe is empty — check extracted_dir path and Phase 1 output."
+        )
+    
+    print("\tMapping labevents itemids to concepts...")
+    lab_df["concept"] = lab_df["itemid"].map(int_code_to_concept)
 
     print("\tJoining chartevents and labevents...")
     ce_lab = pd.concat(
@@ -227,7 +230,7 @@ def process_patient_measurements_vectorized(
     return wide_data
 
 
-def standardize_patient_trajectories(
+def standardise_patient_trajectories(
     init_traj,
     data_dict,
     onset,
@@ -455,7 +458,7 @@ def standardize_patient_trajectories(
         temp_paths.append(path)
 
     print(f"\tStandardisation finished with {na_mean_count} NaN means encountered.")
-    print("\tConcatenating standardized chunks...")
+    print("\tConcatenating standardised chunks...")
     result = pd.concat(
         [
             pd.read_parquet(p)
@@ -488,12 +491,12 @@ def build_trajectories(
     Memory-safely pivots data, standardises time grids, imputes missing values and generates labels.
     """
     # 1. Pivot
-    init_traj = process_patient_measurements_vectorized(
+    init_traj = process_patient_measurements(
         ce_df,
         lab_df,
         mv_df,
         code_to_concept,
-        batch_size=config.get("pivot_batch_size", 500),
+        batch_size=config["pivot_batch_size"],
         output_dir=output_dir,
     )
     del ce_df, lab_df, mv_df
@@ -505,46 +508,44 @@ def build_trajectories(
     # 2. Clinical Heuristics & Sample-Hold
     init_traj = handle_outliers(
         init_traj,
-        config_path=config.get(
-            "cleaning_config_path", f"{BASE_DIR}/configs/outlier_bounds.json"
-        ),
+        config_path=config["cleaning_config_path"],
     )
     init_traj = estimate_gcs_from_rass(init_traj)
     init_traj = estimate_fio2(init_traj)
     init_traj = handle_unit_conversions(init_traj)
     init_traj = sample_and_hold(init_traj, hold_times)
 
-    # 3. Standardize Time Grids
-    init_traj = standardize_patient_trajectories(
+    # 3. Standardise Time Grids
+    init_traj = standardise_patient_trajectories(
         init_traj,
         data_dict,
         onset,
-        timestep=config.get("timestep", 4),
-        window_before=config.get("window_before", 24),
-        window_after=config.get("window_after", 72),
+        timestep=config["timestep"],
+        window_before=config["window_before"],
+        window_after=config["window_after"],
         output_dir=output_dir,
-        flush_every=config.get("flush_every_rows", 5000),
+        flush_every=config["flush_every_rows"],
     )
 
     # 4. Integrate Missingness Features BEFORE Imputation
     init_traj = add_missingness_features(
-        init_traj, timestep_hours=config.get("timestep", 4)
+        init_traj, timestep_hours=config["timestep"]
     )
     # 5. Imputation
     init_traj = handle_missing_values(
         init_traj,
-        missing_threshold=config.get("missing_threshold", 0.8),
-        knn_neighbors=config.get("knn_neighbors", 1),
+        missing_threshold=config["missing_threshold"],
+        knn_neighbors=config["knn_neighbors"],
     )
 
     # 6. Labels & Derived Variables
     init_traj = calculate_derived_variables(init_traj)
     init_traj = apply_exclusion_criteria(
-        init_traj, exclusion_cfg=config.get("exclusion", {})
+        init_traj, exclusion_cfg=config["exclusion"]
     )
     init_traj = add_infection_and_sepsis_flag(init_traj)
     init_traj = add_septic_shock_flag(
-        init_traj, shock_cfg=config.get("septic_shock", {})
+        init_traj, shock_cfg=config["septic_shock"]
     )
 
     return init_traj

@@ -8,7 +8,7 @@ from tqdm.auto import tqdm
 def sample_and_hold(df, vitalslab_hold):
     print("Performing sample and hold interpolation...")
 
-    # wide_data is already sorted by (stay_id, charttime) from process_patient_measurements_vectorized
+    # wide_data is already sorted by (stay_id, charttime) from process_patient_measurements
     cols_to_process = [
         col
         for col in vitalslab_hold

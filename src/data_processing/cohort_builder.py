@@ -59,7 +59,7 @@ def calculate_readmissions(demog, cutoff_days=30):
     """
     print("Calculating readmissions...")
     cutoff = cutoff_days * 24 * 3600
-    # vectorised approach to calculate readmissions within the cutoff window
+
     demog = demog.sort_values(["subject_id", "admittime"])
     demog["prev_dischtime"] = demog.groupby("subject_id")["dischtime"].shift(1)
 
@@ -78,9 +78,9 @@ def fill_missing_icustay_ids(bacterio, demog, abx, stay_id_match_window_hours=48
     An event is associated with a stay if it occurs within ``stay_id_match_window_hours``
     before or after the stay, or if the patient only has one stay in the dataset.
     """
-    print("Filling-in missing ICUSTAY IDs in bacterio (Vectorized)")
+    print("Filling-in missing ICUSTAY IDs in bacterio")
 
-    # vectorised bacterio update
+
     # get missing bacterio rows
     missing_bact = bacterio[bacterio["stay_id"].isna()].copy()
     missing_bact["idx"] = missing_bact.index
@@ -114,7 +114,6 @@ def fill_missing_icustay_ids(bacterio, demog, abx, stay_id_match_window_hours=48
 
     print("Filling-in missing ICUSTAY IDs in ABx")
 
-    # vectorised abx update
     abx["idx"] = abx.index
 
     # prepare demographics with stay counts per hadm_id
@@ -261,19 +260,19 @@ def build_and_save_cohorts(config, path_config):
     bacterio = process_microbio_data(data["microbio"], data["culture"])
     demog = process_demog_data(data["demog"])
     demog = calculate_readmissions(
-        demog, cutoff_days=config.get("readmission_window_days", 30)
+        demog, cutoff_days=config["readmission_window_days"]
     )
     bacterio, data["abx"] = fill_missing_icustay_ids(
         bacterio,
         demog,
         data["abx"],
-        stay_id_match_window_hours=config.get("stay_id_match_window_hours", 48),
+        stay_id_match_window_hours=config["stay_id_match_window_hours"],
     )
     onset = find_infection_onset(
         data["abx"],
         bacterio,
-        abx_before_culture_hours=config.get("infection_abx_before_culture_hours", 24),
-        abx_after_culture_hours=config.get("infection_abx_after_culture_hours", 72),
+        abx_before_culture_hours=config["infection_abx_before_culture_hours"],
+        abx_after_culture_hours=config["infection_abx_after_culture_hours"],
     )
     cohort = build_full_cohort(onset, demog)
 
