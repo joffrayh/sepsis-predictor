@@ -21,8 +21,12 @@ def sample_and_hold(df, vitalslab_hold):
         # for each row, record the charttime of the last valid (non-NaN) measurement
         # within the same stay, then only carry the value forward if it's within
         # the hold period
-        last_valid_time = df["charttime"].where(
-            df[col].notna()).groupby(df["stay_id"]).transform("ffill")
+        last_valid_time = (
+            df["charttime"]
+            .where(df[col].notna())
+            .groupby(df["stay_id"])
+            .transform("ffill")
+        )
 
         last_valid_value = df.groupby("stay_id")[col].transform("ffill")
         # only apply the held value where:
@@ -55,7 +59,7 @@ def fixgaps(x: np.ndarray) -> np.ndarray:
     return y
 
 
-def handle_missing_values(df, missing_threshold=0.8):
+def handle_missing_values(df, missing_threshold=0.8, knn_neighbors=1):
     """
     Handle missing values by:
     1. Dropping columns with missingness above missing_threshold.
@@ -139,7 +143,7 @@ def handle_missing_values(df, missing_threshold=0.8):
             f"\tRunning KNN imputation across {len(chunks)} patient-aligned chunks..."
         )
         for chunk_indices in tqdm(chunks, desc="\tKNN imputation", ncols=100):
-            imputer = KNNImputer(n_neighbors=1, keep_empty_features=True)
+            imputer = KNNImputer(n_neighbors=knn_neighbors, keep_empty_features=True)
             ref[chunk_indices, :] = imputer.fit_transform(ref[chunk_indices, :])
 
         df[cols_for_knn] = ref

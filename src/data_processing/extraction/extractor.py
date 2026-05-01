@@ -156,7 +156,7 @@ class MIMICExtractor:
 
     def extract_all(
         self,
-        metadata_path="src/data_processing/processing_pipeline/extraction/extraction_metadata.json",
+        metadata_path="src/data_processing/extraction/extraction_metadata.json",
         tables=None,
     ):
         """

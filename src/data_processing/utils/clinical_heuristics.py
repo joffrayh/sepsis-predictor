@@ -5,7 +5,7 @@ import numpy as np
 from tqdm.auto import tqdm
 
 
-def handle_outliers(df, config_path="src/data_processing/configs/cleaning_config.json"):
+def handle_outliers(df, config_path="src/data_processing/configs/outlier_bounds.json"):
     print("Handling outliers in patient timeseries data via dynamic config")
 
     if not os.path.exists(config_path):
@@ -111,7 +111,11 @@ def estimate_fio2(df):
     print("Estimating FiO2...")
 
     # keep flow as a local Series — never write it into df to avoid block consolidation copies
-    flow = df["oxygen_flow"].fillna(df["oxygen_flow_cannula_rate"]).fillna(df["oxygen_flow_rate"])
+    flow = (
+        df["oxygen_flow"]
+        .fillna(df["oxygen_flow_cannula_rate"])
+        .fillna(df["oxygen_flow_rate"])
+    )
 
     # for simple flow devices (e.g. nasal cannula), use these flow-to-FiO2 mappings based on clinical estimates
     mask = (
@@ -152,11 +156,7 @@ def estimate_fio2(df):
             df.loc[mask & (flow <= threshold), "fio2"] = fio2_val
 
     # for high flow devices, use these flow-to-FiO2 mappings based on clinical estimates
-    mask = (
-        (df["fio2"].isna())
-        & (flow.notna())
-        & (df["oxygen_flow_device"] == "7")
-    )
+    mask = (df["fio2"].isna()) & (flow.notna()) & (df["oxygen_flow_device"] == "7")
     if mask.any():
         df.loc[mask & (flow >= 15), "fio2"] = 100
         df.loc[mask & (flow >= 10) & (flow < 15), "fio2"] = 90
@@ -165,22 +165,14 @@ def estimate_fio2(df):
         df.loc[mask & (flow <= 6), "fio2"] = 60
 
     # for high flow face mask devices, use these flow-to-FiO2 mappings based on clinical estimates
-    mask = (
-        (df["fio2"].isna())
-        & (flow.notna())
-        & (df["oxygen_flow_device"] == "13")
-    )
+    mask = (df["fio2"].isna()) & (flow.notna()) & (df["oxygen_flow_device"] == "13")
     if mask.any():
         df.loc[mask & (flow >= 15), "fio2"] = 100
         df.loc[mask & (flow >= 10) & (flow < 15), "fio2"] = 80
         df.loc[mask & (flow < 10), "fio2"] = 60
 
     # for simple face mask devices, use these flow-to-FiO2 mappings based on clinical estimates
-    mask = (
-        (df["fio2"].isna())
-        & (flow.notna())
-        & (df["oxygen_flow_device"] == "14")
-    )
+    mask = (df["fio2"].isna()) & (flow.notna()) & (df["oxygen_flow_device"] == "14")
     if mask.any():
         df.loc[mask & (flow >= 10), "fio2"] = 80
         df.loc[mask & (flow >= 5) & (flow < 10), "fio2"] = 60

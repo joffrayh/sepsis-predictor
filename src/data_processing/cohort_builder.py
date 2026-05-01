@@ -48,17 +48,18 @@ def process_demog_data(demog):
     return demog.drop_duplicates(subset=["admittime", "dischtime"], keep="first").copy()
 
 
-def calculate_readmissions(demog, cutoff=3600 * 24 * 30):
+def calculate_readmissions(demog, cutoff_days=30):
     """
     Add a binary 're_admission' column to the demographic data indicating
-    whether a patient was readmitted to icu within 30 days of their previous discharge.
+    whether a patient was readmitted to icu within ``cutoff_days`` days of their previous discharge.
     As the rows are sorted by subject_id and admittime, this is done
     by grouping the subject_ids and taking away the previous discharge time from
     the current admission time, and checking if the
-    difference is <= 30 days (in seconds).
+    difference is <= the cutoff (in seconds).
     """
     print("Calculating readmissions...")
-    # vectorised approach to calculate readmissions within 30 days
+    cutoff = cutoff_days * 24 * 3600
+    # vectorised approach to calculate readmissions within the cutoff window
     demog = demog.sort_values(["subject_id", "admittime"])
     demog["prev_dischtime"] = demog.groupby("subject_id")["dischtime"].shift(1)
 
@@ -69,13 +70,13 @@ def calculate_readmissions(demog, cutoff=3600 * 24 * 30):
     return demog.drop(columns=["prev_dischtime"])
 
 
-def fill_missing_icustay_ids(bacterio, demog, abx):
+def fill_missing_icustay_ids(bacterio, demog, abx, stay_id_match_window_hours=48):
     """
     Fill in missing ICU stay IDs in the bacteriology and antibiotic (abx) data by
     matching the event times to the ICU stay time windows (intime to outtime)
     for the corresponding subject and hostpital admitance ID (hadmid).
-    An event is associated with a stay if it occurs within 48 hours before
-    or after the stay, or if the patient only has one stay in the dataset.
+    An event is associated with a stay if it occurs within ``stay_id_match_window_hours``
+    before or after the stay, or if the patient only has one stay in the dataset.
     """
     print("Filling-in missing ICUSTAY IDs in bacterio (Vectorized)")
 
@@ -96,10 +97,14 @@ def fill_missing_icustay_ids(bacterio, demog, abx):
     stay_counts = demog_sub.groupby("subject_id").size().reset_index(name="stay_count")
     demog_sub = demog_sub.merge(stay_counts, on="subject_id")
 
-    # merge and filter based on within 48h or only 1 stay in icu for the subject
+    # merge and filter based on within window or only 1 stay in icu for the subject
     merged_bact = missing_bact.merge(demog_sub, on="subject_id", how="inner")
-    time_mask = (merged_bact["charttime"] >= merged_bact["intime"] - 48 * 3600) & (
-        merged_bact["charttime"] <= merged_bact["outtime"] + 48 * 3600
+    time_mask = (
+        merged_bact["charttime"]
+        >= merged_bact["intime"] - stay_id_match_window_hours * 3600
+    ) & (
+        merged_bact["charttime"]
+        <= merged_bact["outtime"] + stay_id_match_window_hours * 3600
     )
     valid_bact = merged_bact[time_mask | (merged_bact["stay_count"] == 1)]
 
@@ -121,10 +126,14 @@ def fill_missing_icustay_ids(bacterio, demog, abx):
     abx_counts = demog_abx_sub.groupby("hadm_id").size().reset_index(name="stay_count")
     demog_abx_sub = demog_abx_sub.merge(abx_counts, on="hadm_id")
 
-    # merge and filter based on within 48h or only 1 stay in icu for the subject
+    # merge and filter based on within window or only 1 stay in icu for the subject
     merged_abx = abx.merge(demog_abx_sub, on="hadm_id", how="inner")
-    time_mask_abx = (merged_abx["starttime"] >= merged_abx["intime"] - 48 * 3600) & (
-        merged_abx["starttime"] <= merged_abx["outtime"] + 48 * 3600
+    time_mask_abx = (
+        merged_abx["starttime"]
+        >= merged_abx["intime"] - stay_id_match_window_hours * 3600
+    ) & (
+        merged_abx["starttime"]
+        <= merged_abx["outtime"] + stay_id_match_window_hours * 3600
     )
     valid_abx = merged_abx[time_mask_abx | (merged_abx["stay_count"] == 1)]
 
@@ -139,12 +148,14 @@ def fill_missing_icustay_ids(bacterio, demog, abx):
     return bacterio, abx
 
 
-def find_infection_onset(abx, bacterio):
+def find_infection_onset(
+    abx, bacterio, abx_before_culture_hours=24, abx_after_culture_hours=72
+):
     """
     Find the presumed onset of infection according to Sepsis-3 guidelines.
     An infection onset is identified if:
-    1) An antibiotic is given within 24 hours before a culture is taken, or
-    2) An antibiotic is given within 72 hours after a culture is taken.
+    1) An antibiotic is given within ``abx_before_culture_hours`` hours before a culture is taken, or
+    2) An antibiotic is given within ``abx_after_culture_hours`` hours after a culture is taken.
     The onset time is assigned as the time of antibiotic administration if condition 1 is met,
     or the time of culture if condition 2 is met. Only the earliest valid onset per stay is kept.
     """
@@ -170,19 +181,25 @@ def find_infection_onset(abx, bacterio):
     closest = merged.drop_duplicates(subset=["abx_idx"]).copy()
 
     # apply conditions:
-    # time_diff <= 24 and abx takes place before bact
-    # OR time_diff <= 72 and abx takes place after bact
-    cond1 = (closest["diff_hr"] <= 24) & (closest["starttime"] <= closest["charttime"])
-    cond2 = (closest["diff_hr"] <= 72) & (closest["starttime"] >= closest["charttime"])
+    # time_diff <= abx_before_culture_hours and abx takes place before bact
+    # OR time_diff <= abx_after_culture_hours and abx takes place after bact
+    cond1 = (closest["diff_hr"] <= abx_before_culture_hours) & (
+        closest["starttime"] <= closest["charttime"]
+    )
+    cond2 = (closest["diff_hr"] <= abx_after_culture_hours) & (
+        closest["starttime"] >= closest["charttime"]
+    )
 
     valid = closest[cond1 | cond2].copy()
 
     # from the valid infection onsets, we want to find at what time
-    # the infection onset occurs. Accoding to sepsis3 guidelines,
-    # if starttime of abx is within 24h before charttime of bact, then onset is at starttime of abx
-    # if starttime of abx is within 72h after charttime of bact, then onset is at charttime of bact
+    # the infection onset occurs. According to sepsis3 guidelines,
+    # if starttime of abx is within abx_before_culture_hours before charttime of bact, onset is at starttime of abx
+    # if starttime of abx is within abx_after_culture_hours after charttime of bact, onset is at charttime of bact
     # so here we get the rows where the first condition is met
-    valid_cond1 = (valid["diff_hr"] <= 24) & (valid["starttime"] <= valid["charttime"])
+    valid_cond1 = (valid["diff_hr"] <= abx_before_culture_hours) & (
+        valid["starttime"] <= valid["charttime"]
+    )
 
     # based on this first condition, we assignt the onset to starttime if it is true
     # and to charttime if it is false (which means the second condition must be true)
@@ -215,13 +232,13 @@ def build_full_cohort(onset_df, demog):
     return merged[["subject_id", "stay_id", "anchor_time", "intime", "onset_time"]]
 
 
-def build_and_save_cohorts(config):
+def build_and_save_cohorts(config, path_config):
     """
     Executes the initial preprocessing step to generate the static patient cohort.
     """
     # Simulate the data loading based on config
-    input_dir = config.get("input_dir", "data/processed_files")
-    output_dir = config.get("output_dir", "data/processed_files")
+    input_dir = path_config["extracted_dir"]
+    output_dir = path_config["processed_dir"]
 
     print("Loading required processed files...")
     files = {
@@ -243,19 +260,30 @@ def build_and_save_cohorts(config):
 
     bacterio = process_microbio_data(data["microbio"], data["culture"])
     demog = process_demog_data(data["demog"])
-    demog = calculate_readmissions(demog)
-    bacterio, data["abx"] = fill_missing_icustay_ids(bacterio, demog, data["abx"])
-    onset = find_infection_onset(data["abx"], bacterio)
+    demog = calculate_readmissions(
+        demog, cutoff_days=config.get("readmission_window_days", 30)
+    )
+    bacterio, data["abx"] = fill_missing_icustay_ids(
+        bacterio,
+        demog,
+        data["abx"],
+        stay_id_match_window_hours=config.get("stay_id_match_window_hours", 48),
+    )
+    onset = find_infection_onset(
+        data["abx"],
+        bacterio,
+        abx_before_culture_hours=config.get("infection_abx_before_culture_hours", 24),
+        abx_after_culture_hours=config.get("infection_abx_after_culture_hours", 72),
+    )
     cohort = build_full_cohort(onset, demog)
 
-    if config.get("save_intermediate", True):
-        print("Saving processed files...")
-        os.makedirs(output_dir, exist_ok=True)
-        cohort.to_csv(f"{output_dir}/cohort.csv", sep="|", index=False)
-        bacterio.to_csv(f"{output_dir}/bacterio_processed.csv", sep="|", index=False)
-        demog.to_csv(f"{output_dir}/demog_processed.csv", sep="|", index=False)
-        data["labU"].to_csv(f"{output_dir}/labu.csv", sep="|", index=False)
-        data["abx"].to_csv(f"{output_dir}/abx_processed.csv", sep="|", index=False)
+    print("Saving processed files...")
+    os.makedirs(output_dir, exist_ok=True)
+    cohort.to_csv(f"{output_dir}/cohort.csv", sep="|", index=False)
+    bacterio.to_csv(f"{output_dir}/bacterio_processed.csv", sep="|", index=False)
+    demog.to_csv(f"{output_dir}/demog_processed.csv", sep="|", index=False)
+    data["labU"].to_csv(f"{output_dir}/labu.csv", sep="|", index=False)
+    data["abx"].to_csv(f"{output_dir}/abx_processed.csv", sep="|", index=False)
 
     print("Cohort building complete!")
     return cohort, bacterio, demog, data

@@ -1,0 +1,106 @@
+# ==============================================================================
+# MIMIC-IV Sepsis Prediction Pipeline — Master Configuration
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# paths: File system paths used by the pipeline.
+#        Relative paths are resolved from the repository root.
+# ------------------------------------------------------------------------------
+paths:
+  # Directory where Phase 1 writes extracted CSVs and Phase 2/3 reads them
+  extracted_dir: data/extracted/
+
+  # 13 DuckDB SQL extraction queries (Phase 1)
+  extraction_metadata: src/data_processing/extraction/extraction_metadata.json
+
+  # Directory where Phase 2  and 3 read and write intermediate files, 
+  # and where Phase 3 writes the final output file (output_filename).
+  processed_dir: data/processed/
+
+  # Filename (inside processed_dir) for the final output Parquet dataset
+  output_filename: sepsis_trajectories_4h.parquet
+
+
+# ------------------------------------------------------------------------------
+# cohort: Parameters governing Phase 2 cohort construction.
+# ------------------------------------------------------------------------------
+cohort:
+  # A patient is flagged as a re-admission if they return within this many days
+  # of their previous ICU discharge.
+  readmission_window_days: 30
+
+  # When matching bacteriology/ABx events to an ICU stay (to fill missing
+  # stay_ids), an event is accepted if it falls within ±this many hours of
+  # the stay's intime/outtime window.
+  stay_id_match_window_hours: 48
+
+  # Sepsis-3 infection onset: antibiotic must be given ≤ this many hours
+  # BEFORE a positive culture to count as condition 1.
+  infection_abx_before_culture_hours: 24
+
+  # Sepsis-3 infection onset: antibiotic must be given ≤ this many hours
+  # AFTER a positive culture to count as condition 2.
+  infection_abx_after_culture_hours: 72
+
+
+# ------------------------------------------------------------------------------
+# trajectories: All Phase 3 parameters — time grid, clinical reference paths, imputation,
+#               exclusion, septic shock criteria, and performance tuning.
+# ------------------------------------------------------------------------------
+trajectories:
+  # --- Time grid ---
+  # Width of each time bin in hours. Measurements within a bin are averaged;
+  # fluid, UO, and antibiotic flags are summed.
+  timestep: 4
+
+  # Hours before anchor_time (ICU intime) to include in the window.
+  window_before: 24
+
+  # Hours after anchor_time to include in the window.
+  window_after: 72
+
+  # --- Config file paths ---
+  # itemid → clinical concept name mapping + sample-and-hold times
+  measurement_mappings_path: src/data_processing/clinical_reference/measurement_mappings.json
+
+  # Per-variable outlier bounds and optional transforms
+  cleaning_config_path: src/data_processing/clinical_reference/outlier_bounds.json
+
+  # --- Imputation ---
+  # Columns with missingness fraction above this are dropped before KNN. Range: (0, 1].
+  missing_threshold: 0.8
+
+  # Neighbours used by KNNImputer. 1 = nearest-neighbour substitution.
+  knn_neighbors: 1
+
+  # --- Exclusion criteria (Phase 3i) ---
+  # Stays with any 4 h window exceeding these values are excluded as
+  # physiologically implausible (likely data entry errors).
+  exclusion:
+    max_uo_per_window_ml: 12000
+    max_fluid_per_window_ml: 10000
+    # Stays where in-hospital death occurs within this many hours of the first
+    # recorded measurement are excluded (too little data to be informative).
+    early_death_hours: 24
+
+  # --- Septic shock label criteria (Phase 3h) ---
+  # All five Sepsis-3 criteria must be met simultaneously at a timestep for onset.
+  # WARNING: fluid_window_timesteps × timestep = rolling fluid window in hours.
+  #          Default 3 × 4 h = 12 h. If you change timestep, update this too.
+  septic_shock:
+    map_threshold_mmhg: 65
+    lactate_threshold_mmol: 2.0
+    # Cumulative fluid over the rolling window must reach this value (mL).
+    fluid_resuscitation_ml: 2000
+    fluid_window_timesteps: 3
+
+  # --- Performance (correctness-neutral tuning) ---
+  # Rows read per chunk when loading large CSVs.
+  chunk_size: 1000000
+
+  # ICU stays per pivot batch (Phase 3b). Lower = less peak RAM, more I/O.
+  pivot_batch_size: 500
+
+  # Trajectory rows accumulated before flushing to disk (Phase 3c).
+  # Reduce if Phase 3c causes OOM.
+  flush_every_rows: 5000

@@ -1,10 +1,10 @@
 # Pipeline Configuration Files
 
-This folder contains two JSON files that control the data cleaning and measurement mapping behaviour of the pipeline. Most users will not need to edit these, but they are the primary levers for adjusting clinical thresholds and adding new MIMIC-IV measurements.
+This folder contains two JSON files that control the data outlier handling and measurement mapping behaviour of the pipeline. Most users will not need to edit these, but they are the primary levers for adjusting clinical thresholds and adding new MIMIC-IV measurements.
 
 ---
 
-## `cleaning_config.json`
+## `outlier_bounds.json`
 
 Controls step 3d (outlier handling) in `utils/clinical_heuristics.py → handle_outliers()`.
 
@@ -89,4 +89,4 @@ Any raw chartevent or labevent row whose `itemid` does not appear in this file i
 
 1. Find the `itemid`(s) in MIMIC-IV (check `d_items` for chart events, `d_labitems` for lab events).
 2. Add an entry to `measurement_mappings.json` with an appropriate `hold_time`.
-3. If the new variable needs outlier bounds, add a corresponding entry to `cleaning_config.json`.
+3. If the new variable needs outlier bounds, add a corresponding entry to `outlier_bounds.json`.

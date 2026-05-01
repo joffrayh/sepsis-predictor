@@ -8,7 +8,6 @@ import fastparquet
 import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
-
 from utils.clinical_heuristics import (
     estimate_fio2,
     estimate_gcs_from_rass,
@@ -30,8 +29,9 @@ from utils.labels import (
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
-def load_measurement_mappings():
-    with open(f"{BASE_DIR}/configs/measurement_mappings.json") as f:
+def load_measurement_mappings(path):
+
+    with open(path) as f:
         measurements = json.load(f)
 
     code_to_concept = {}
@@ -48,35 +48,33 @@ def load_measurement_mappings():
 
 
 def load_and_filter_chunked(
-    filename,
+    filepath,
     valid_stays,
     onset_df=None,
     time_col=None,
     winb4=24,
     winaft=72,
     itemid_filter=None,
+    chunk_size=1_000_000,
 ):
     """
     Reads large CSV files in chunks and filters out rows not belonging
     to our target patients or target time windows.
     This saves huge RAM compared to old function.
     """
-    filepath = f"data/processed_files/{filename}"
     if not os.path.exists(filepath):
         print(f"Warning: {filepath} not found.")
         return pd.DataFrame()
 
-    CHUNKSIZE = 1000000
-
     with open(filepath, "rb") as f:
-        total_chunks = (sum(1 for _ in f) - 1) // CHUNKSIZE + 1
+        total_chunks = (sum(1 for _ in f) - 1) // chunk_size + 1
 
     chunks = []
     # read in row chunks to keep memory usage small
     for chunk in tqdm(
-        pd.read_csv(filepath, sep="|", chunksize=CHUNKSIZE, low_memory=False),
+        pd.read_csv(filepath, sep="|", chunksize=chunk_size, low_memory=False),
         total=total_chunks,
-        desc=f"\tProcessing {filename}",
+        desc=f"\tProcessing {os.path.basename(filepath)}",
         ncols=100,
     ):
         # get valid patients
@@ -108,7 +106,13 @@ def load_and_filter_chunked(
 
 
 def process_patient_measurements_vectorized(
-    ce_df, lab_df, mv_df, code_to_concept, batch_size=500, output_dir="data/processed_files"
+    ce_df,
+    lab_df,
+    mv_df,
+    code_to_concept,
+    batch_size=500,
+    output_dir="data/processed_files",
+    chunk_size=1_000_000,
 ):
     print("Pivoting chartevents, lab events and mechvent...")
 
@@ -210,7 +214,7 @@ def process_patient_measurements_vectorized(
             subset=["stay_id", "charttime"], keep="last"
         )
         del mv_df
-        
+
         mv_map = mv_clean.set_index(["stay_id", "charttime"])["mechvent"]
         del mv_clean
 
@@ -317,10 +321,10 @@ def standardize_patient_trajectories(
 
     # for each patient trajectory, create fixed time steps relative to
     # ICU admission time (anchor_time) and estimate measurements within each step
-    for i, stay_id in enumerate(tqdm(
-        unique_stay_ids, desc="\tStandardising per stay_id", ncols=100
-    )):
-        patient_traj = init_traj.iloc[group_boundaries[i]:group_boundaries[i + 1]]
+    for i, stay_id in enumerate(
+        tqdm(unique_stay_ids, desc="\tStandardising per stay_id", ncols=100)
+    ):
+        patient_traj = init_traj.iloc[group_boundaries[i] : group_boundaries[i + 1]]
         start_time = anchor_dict.get(stay_id, 0)
         onset_time = onset_time_dict.get(stay_id, np.nan)
         demographics = demog_dict.get(stay_id, {})
@@ -362,7 +366,9 @@ def standardize_patient_trajectories(
                 with warnings.catch_warnings(record=True) as caught:
                     warnings.simplefilter("always", RuntimeWarning)
                     measurements = window_data.mean(axis=0, skipna=True).to_dict()
-                na_mean_count += sum(1 for w in caught if issubclass(w.category, RuntimeWarning))
+                na_mean_count += sum(
+                    1 for w in caught if issubclass(w.category, RuntimeWarning)
+                )
 
             # fluids
             fluid_total, fluid_step = 0, 0
@@ -475,16 +481,20 @@ def build_trajectories(
     code_to_concept,
     hold_times,
     config,
+    output_dir,
 ):
     """
     End-to-end timeseries sequence generation.
     Memory-safely pivots data, standardises time grids, imputes missing values and generates labels.
     """
-    output_dir = config.get("output_dir", "data/processed_files")
-
     # 1. Pivot
     init_traj = process_patient_measurements_vectorized(
-        ce_df, lab_df, mv_df, code_to_concept, output_dir=output_dir
+        ce_df,
+        lab_df,
+        mv_df,
+        code_to_concept,
+        batch_size=config.get("pivot_batch_size", 500),
+        output_dir=output_dir,
     )
     del ce_df, lab_df, mv_df
 
@@ -493,7 +503,12 @@ def build_trajectories(
         return pd.DataFrame()
 
     # 2. Clinical Heuristics & Sample-Hold
-    init_traj = handle_outliers(init_traj)
+    init_traj = handle_outliers(
+        init_traj,
+        config_path=config.get(
+            "cleaning_config_path", f"{BASE_DIR}/configs/outlier_bounds.json"
+        ),
+    )
     init_traj = estimate_gcs_from_rass(init_traj)
     init_traj = estimate_fio2(init_traj)
     init_traj = handle_unit_conversions(init_traj)
@@ -508,19 +523,28 @@ def build_trajectories(
         window_before=config.get("window_before", 24),
         window_after=config.get("window_after", 72),
         output_dir=output_dir,
+        flush_every=config.get("flush_every_rows", 5000),
     )
 
     # 4. Integrate Missingness Features BEFORE Imputation
     init_traj = add_missingness_features(
         init_traj, timestep_hours=config.get("timestep", 4)
     )
-    # 5. Imputation2
-    init_traj = handle_missing_values(init_traj, config.get("missing_threshold", 0.8))
+    # 5. Imputation
+    init_traj = handle_missing_values(
+        init_traj,
+        missing_threshold=config.get("missing_threshold", 0.8),
+        knn_neighbors=config.get("knn_neighbors", 1),
+    )
 
     # 6. Labels & Derived Variables
     init_traj = calculate_derived_variables(init_traj)
-    init_traj = apply_exclusion_criteria(init_traj)
+    init_traj = apply_exclusion_criteria(
+        init_traj, exclusion_cfg=config.get("exclusion", {})
+    )
     init_traj = add_infection_and_sepsis_flag(init_traj)
-    init_traj = add_septic_shock_flag(init_traj)
+    init_traj = add_septic_shock_flag(
+        init_traj, shock_cfg=config.get("septic_shock", {})
+    )
 
     return init_traj
