@@ -62,7 +62,7 @@ def calculate_derived_variables(df):
     df.loc[np.isinf(df["shock_index"]), "shock_index"] = np.nan
     df["shock_index"] = df["shock_index"].fillna(df["shock_index"].mean())
 
-    # SOFA respiratory 
+    # SOFA respiratory
     pf = df["pf_ratio"]
     df["sofa_resp"] = (
         pd.cut(

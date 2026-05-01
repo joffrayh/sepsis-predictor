@@ -706,9 +706,7 @@ def build_trajectories(
     )
 
     # 4. Integrate Missingness Features BEFORE Imputation
-    init_traj = add_missingness_features(
-        init_traj, timestep_hours=config["timestep"]
-    )
+    init_traj = add_missingness_features(init_traj, timestep_hours=config["timestep"])
     # 5. Imputation
     init_traj = handle_missing_values(
         init_traj,
@@ -720,14 +718,10 @@ def build_trajectories(
     init_traj = calculate_derived_variables(init_traj)
 
     # 7. Exclusion Criteria
-    init_traj = apply_exclusion_criteria(
-        init_traj, exclusion_cfg=config["exclusion"]
-    )
+    init_traj = apply_exclusion_criteria(init_traj, exclusion_cfg=config["exclusion"])
 
     # 8. Labels
     init_traj = add_infection_and_sepsis_flag(init_traj)
-    init_traj = add_septic_shock_flag(
-        init_traj, shock_cfg=config["septic_shock"]
-    )
+    init_traj = add_septic_shock_flag(init_traj, shock_cfg=config["septic_shock"])
 
     return init_traj

@@ -8,7 +8,7 @@ This document describes how to set up the environment and run the full data proc
 
 | Requirement | Version | Notes |
 |---|---|---|
-| Python | 3.11.x | Exactly 3.11 (< 3.12) |
+| Python | 3.11.x | >=3.11,<3.12|
 | [uv](https://docs.astral.sh/uv/) | latest | Package & venv manager |
 | MIMIC-IV access | v3.1 | Requires PhysioNet credentialed access |
 
@@ -45,9 +45,6 @@ From the repository root:
 ```bash
 uv sync
 ```
-
-This creates a `.venv/` and installs all dependencies declared in `pyproject.toml` (pandas, numpy, scikit-learn, lightgbm, mlflow, etc.).
-
 ---
 
 ## Step 2 — Run the Data Pipeline
@@ -55,18 +52,59 @@ This creates a `.venv/` and installs all dependencies declared in `pyproject.tom
 The pipeline is a single Python entry point that handles all three phases end-to-end, with idempotent checkpointing so that completed phases are not repeated on re-runs.
 
 ```bash
-cd /path/to/dissertation/code
-source .venv/bin/activate
 
 # First run — extract from raw MIMIC-IV files:
-python src/data_processing/main_pipeline.py \
+uv run src/data_processing/main.py \
     --raw-data-dir data/raw/mimic-iv-3.1
 
 # Subsequent runs — skip extraction (CSVs already exist):
-python src/data_processing/main_pipeline.py
+uv run src/data_processing/main.py
 ```
 
 `--raw-data-dir` is only needed the **first time** (Phase 1). On subsequent runs it can be omitted and the pipeline picks up from the last completed checkpoint.
+
+An optional `--config` flag specifies the pipeline configuration YAML (default: `src/data_processing/config.yaml`).
+
+---
+
+## Configuration
+
+All pipeline behaviour is controlled by `src/data_processing/config.yaml`. Edit that file to change any default value — no code changes required. The file is divided into three sections:
+
+| Section | Controls |
+|---|---|
+| `paths` | Input/output directories (`extracted_dir`, `processed_dir`), path to the extraction metadata JSON, and the final output filename |
+| `cohort` | Readmission window (days), stay ID match window (hours), and the Sepsis-3 ABx/culture time windows for infection onset identification |
+| `trajectories` | Time grid (`timestep`, `window_before`, `window_after`), paths to `measurement_mappings.json` and `outlier_bounds.json`, imputation parameters (`missing_threshold`, `knn_neighbors`), exclusion thresholds, septic shock label criteria, and performance tuning (`chunk_size`, `pivot_batch_size`, `flush_every_rows`) |
+
+The `clinical_reference/` files (`measurement_mappings.json`, `outlier_bounds.json`) are data files, not strictly config and are likely not to be edited by most users. Edit them to change which MIMIC `itemid` codes map to a concept, adjust per-variable sample-and-hold times, or modify outlier bounds.
+
+---
+
+## Directory Layout
+
+```
+data/
+├── raw/mimic-iv-3.1/        # Raw gzipped MIMIC-IV source files (input, read-only)
+├── extracted/               # Phase 1 output — pipe-delimited CSVs
+└── processed/               # Phase 2 & 3 output — intermediate CSVs + final Parquet
+
+src/data_processing/
+├── main.py                  # Pipeline entry point
+├── config.yaml              # Master configuration (all thresholds, paths, parameters)
+├── cohort_builder.py        # Phase 2
+├── trajectory_builder.py    # Phase 3
+├── extraction/
+│   ├── extractor.py         # Phase 1 DuckDB extractor
+│   └── extraction_metadata.json  # 13 SQL queries
+├── clinical_reference/
+│   ├── measurement_mappings.json # itemid → concept name + sample-and-hold times
+│   └── outlier_bounds.json       # Per-variable outlier bounds and transforms
+└── utils/
+    ├── clinical_heuristics.py    # Outlier handling, unit conversion, FiO₂/GCS estimation
+    ├── imputation.py             # Missingness features, sample-and-hold, KNN imputation
+    └── labels.py                 # SOFA/SIRS scores, sepsis/shock labels, exclusion criteria
+```
 
 ---
 
@@ -76,13 +114,12 @@ python src/data_processing/main_pipeline.py
 
 *Skipped automatically if `--raw-data-dir` is not supplied.*
 
-`MIMICExtractor` (in `processing_pipeline/extraction/extractor.py`) opens an in-process DuckDB connection, registers every `.csv.gz` file under `hosp/` and `icu/` as a view under the `mimiciv_hosp` / `mimiciv_icu` schemas, then runs 13 parameterised SQL queries defined in `processing_pipeline/extraction/extraction_metadata.json`. No PostgreSQL server is required — DuckDB reads directly from the gzipped source files.
+`MIMICExtractor` (in `extraction/extractor.py`) opens an in-process DuckDB connection, registers every `.csv.gz` file under `hosp/` and `icu/` as a view under the `mimiciv_hosp` / `mimiciv_icu` schemas, then runs 13 parameterised SQL queries defined in `extraction/extraction_metadata.json`. No PostgreSQL server is required — DuckDB reads directly from the gzipped source files.
 
-Outputs to `data/processed_files/`:
+Outputs to `data/extracted/`:
 
 | File | Contents |
 |---|---|
-| `cohort.csv` | ICU stays meeting basic inclusion criteria |
 | `chartevents.csv` | Vital signs from ICU chart events |
 | `labs_ce.csv` / `labs_le.csv` | Lab results (chart & lab event sources) |
 | `demog.csv` | Patient demographics and comorbidities |
@@ -95,90 +132,102 @@ Outputs to `data/processed_files/`:
 | `icustays.csv` | ICU stay metadata |
 | `preadm_fluid.csv` | Pre-admission fluid intake |
 
-All files use `|` as the field separator.
+All files use `|` as the field separator. Each table has a per-file checkpoint: if the output CSV already exists, that table is skipped.
 
 ---
 
 ### Phase 2 — Static Cohort Generation
 
-*Checkpointed: skipped if `data/processed_files/cohort.csv` already exists.*
+*Checkpointed: skipped if `data/processed/cohort.csv` already exists.*
 
-`cohort_builder.py` combines the raw extracted tables to produce a clean cohort definition:
+`cohort_builder.py` reads from `data/extracted/` and writes to `data/processed/`. Steps in order:
 
 1. **Microbiology fusion** — merges `microbio.csv` and `culture.csv`; fills missing `charttime` from `chartdate`.
-2. **Demographics cleaning** — fills missing mortality flags and Charlson comorbidity index; deduplicates on `(admittime, dischtime)`.
-3. **Readmission calculation** — marks stays where the patient was readmitted to ICU within 30 days.
-4. **Antibiotic processing** — combines `abx.csv` (administered) and `bacterio_processed.csv`; deduplicates.
-5. **Infection onset imputation** — for each stay, estimates a suspected infection onset time (`anchor_time`) from the first antibiotic and the corresponding positive culture result.
-6. **Lab union** — concatenates `labs_ce.csv` and `labs_le.csv` into a single `labu.csv`.
-7. **Outputs** — saves `cohort.csv`, `demog_processed.csv`, `abx_processed.csv`, and `labu.csv` to `data/processed_files/`.
+2. **Demographics cleaning** — fills missing mortality flags and Charlson comorbidity index with 0; deduplicates on `(admittime, dischtime)`.
+3. **Readmission calculation** — flags stays where the patient was re-admitted to ICU within 30 days of their previous discharge.
+4. **Missing `stay_id` filling** — matches bacteriology and ABx events to ICU stay windows (±48 h) to fill events that were extracted without a `stay_id`.
+5. **Antibiotic processing** — merges `abx.csv` with the completed bacteriology table; deduplicates.
+6. **Infection onset identification** — for each stay, identifies a presumed infection onset time (`onset_time`) using the Sepsis-3 definition: an antibiotic given ≤ 24 h before, or ≤ 72 h after, a positive culture. Only the earliest valid onset per stay is kept.
+7. **Full cohort assembly** — merges onset times onto all ICU stays. ICU `intime` is used as `anchor_time` for every stay, regardless of whether infection was confirmed. Stays without a confirmed infection onset receive `onset_time = NaN`.
+8. **Lab union** — concatenates `labs_ce.csv` and `labs_le.csv` into `labu.csv` (renames `timestp` → `charttime` in the LE table for consistency).
 
-`cohort.csv` has columns: `stay_id`, `subject_id`, `anchor_time`, `onset_time`, demographics.
+Outputs to `data/processed/`:
+
+| File | Contents |
+|---|---|
+| `cohort.csv` | All ICU stays with `stay_id`, `subject_id`, `anchor_time` (= `intime`), `intime`, `onset_time` |
+| `bacterio_processed.csv` | Fused bacteriology table with `stay_id` filled |
+| `demog_processed.csv` | Cleaned demographics with `re_admission` flag |
+| `abx_processed.csv` | Antibiotics with `stay_id` filled |
+| `labu.csv` | Union of chart and lab event lab results |
 
 ---
 
 ### Phase 3 — Trajectory & Feature Engineering
 
-This is the heaviest phase. It reads measurements in chunks to stay memory-efficient, then produces a single standardised timeseries per patient.
+This is the heaviest phase. Steps run in a fixed order — reordering any step would corrupt the output. Sub-steps use `data/processed/` as a scratch directory for temporary Parquet files.
 
 #### 3a. Chunked Loading & Time-window Filtering
 
-`load_and_filter_chunked()` reads `chartevents.csv`, `labu.csv`, `mechvent.csv`, and all secondary tables (fluid, vaso, UO, abx, demog) in 1 million-row chunks. Each chunk is filtered to:
-- Only valid `stay_id`s in the cohort.
-- Only rows within a **24-hour window before** and **72-hour window after** the suspected infection onset (`anchor_time`).
+`load_and_filter_chunked()` reads large CSVs in 1 million-row chunks. Each chunk is filtered to valid `stay_id`s and to rows within **24 h before** to **72 h after** `anchor_time` (ICU `intime`).
+
+Sources and directories:
+- From `data/extracted/`: `chartevents.csv`, `mechvent.csv`, `fluid.csv`, `vaso.csv`, `uo.csv`
+- From `data/processed/`: `labu.csv`, `demog_processed.csv`, `abx_processed.csv`
 
 #### 3b. Measurement Pivoting
 
-`process_patient_measurements_vectorized()` maps all `itemid` codes to clinical concept names using `processing_pipeline/ReferenceFiles/measurement_mappings.json`, then pivots the long-format event table into a wide table with one row per `(stay_id, charttime)`. Pivoting is done in batches of 500 stays and flushed to temporary `.parquet` files to avoid out-of-memory errors.
+`process_patient_measurements()` maps all `itemid` codes to clinical concept names using `clinical_reference/measurement_mappings.json`, concatenates chart events and lab events, then pivots the long-format table into a wide table with one row per `(stay_id, charttime)`. Pivoting is done in batches of 500 stays, flushed to temporary `.parquet` files to cap memory. The fixed column schema is derived from all possible concepts so every batch has identical columns. Mechanical ventilation events are merged in at this stage.
 
-Mechanical ventilation events are merged in at this stage.
+#### 3c. Outlier Handling, GCS/FiO₂ Estimation & Unit Conversion
 
-#### 3c. 4-Hour Grid Standardisation
+Applied on the **raw wide table** before grid standardisation, so rules operate at original measurement resolution:
 
-`standardize_patient_trajectories()` aligns every patient's measurements onto a fixed **4-hour timestep grid** relative to their `anchor_time` (spanning 24 hours before to 72 hours after onset = 25 timesteps). For each grid cell:
+- `handle_outliers()` applies per-variable bounds from `clinical_reference/outlier_bounds.json`. Rules per variable (all optional): nullify below `min_valid` / above `max_valid`; clip to `clip_low` / `clip_high`; apply `log1p` transform.
 
-- Clinical measurements are averaged across all raw readings that fall in the window.
-- Fluid, vasopressor, and urine output are summed over the window.
-- Antibiotic flags (`abx_given`, `hours_since_first_abx`, `num_abx`) are computed.
-- Static demographic features (age, gender, Charlson index, mortality flags, etc.) are attached.
+  Three hardcoded special cases (not in the JSON):
 
-Results are flushed to disk every 5,000 rows to keep memory bounded.
+  | Variable | Rule |
+  |---|---|
+  | `spo2` | > 150 → `NaN`; (100, 150] → clipped to 100 |
+  | `temp_C` | > 90 assumed Fahrenheit — rescued into `temp_F` then nullified |
+  | `fio2` | > 100 → `NaN`; < 1 → × 100 (0–1 scale fix); < 20 → `NaN` |
 
-#### 3d. Outlier Handling & Cleaning
+- `estimate_gcs_from_rass()` fills missing GCS from RASS using a fixed clinical mapping table.
+- `estimate_fio2()` estimates missing FiO₂ from oxygen flow rate and device type using clinical approximation tables.
+- `handle_unit_conversions()` cross-fills `temp_C`/`temp_F`, `hemoglobin`/`hematocrit`, and `bilirubin_total`/`bilirubin_direct` using empirical conversion formulas.
+- `sample_and_hold()` forward-fills each vital/lab within each stay up to its maximum hold time (defined per concept in `measurement_mappings.json`, e.g. 8 h for blood gas, 24 h for metabolic panel).
 
-`handle_outliers()` applies bounds defined in `cleaning_config.json`. For each clinical variable, it can:
+#### 3d. 4-Hour Grid Standardisation
 
-- Nullify values below `min_valid` or above `max_valid`.
-- Clip values to `clip_low` or `clip_high`.
-- Apply `log1p` transformation (used for `wbc`).
+`standardise_patient_trajectories()` aligns every patient's measurements onto a fixed **4-hour timestep grid** spanning 24 h before to 72 h after `anchor_time` (ICU `intime`). For each grid cell:
 
-Three variables receive hardcoded special-case logic (not in the JSON config):
+- Clinical measurements are **averaged** across all raw readings in the window.
+- Fluid, UO, and antibiotic counts are **summed**.
+- Vasopressor dose: **median and max** of rates active in the window.
+- Antibiotic flags (`abx_given`, `hours_since_first_abx`, `num_abx`) are computed from overlap with the window.
+- Static demographic features are attached.
 
-| Variable | Rule |
-|---|---|
-| `spo2` | Values > 150 → `NaN`; values in (100, 150] → clipped to 100 |
-| `temp_C` | Values > 90 are assumed to be Fahrenheit; rescued into `temp_F` column, then nullified |
-| `fio2` | Values > 100 → `NaN`; values < 1 multiplied by 100 (0–1 scale → percent); values < 20 → `NaN` |
-
-`handle_unit_conversions()` then converts `temp_F` values to Celsius and merges them back into `temp_C`.
+Results are flushed to disk every 5,000 accumulated rows to bound memory.
 
 #### 3e. Missingness Features
 
-Before imputation, `add_missingness_features()` adds two tracking columns for each of the key lab variables (`lactate`, `wbc`, `creatinine`, `platelets`):
+**Must run before imputation.** `add_missingness_features()` adds two columns per critical lab (`lactate`, `wbc`, `creatinine`, `platelets`):
 
-- `<lab>_measured` — binary flag: was a real measurement present at this timestep?
-- `hours_since_<lab>` — hours elapsed since the last valid measurement (NaN if never measured).
+- `<lab>_measured` — 1 if a real measurement was present at this timestep, 0 if NaN.
+- `hours_since_<lab>` — hours since the last valid measurement within the same stay. Rows before the first measurement get the sentinel value `999.0`.
 
-These features encode the *pattern* of measurement, which is clinically informative.
+#### 3f. KNN Imputation
 
-#### 3f. Imputation
+`handle_missing_values()` fills residual NaNs remaining after sample-and-hold (step 3c):
 
-1. **Sample-and-hold** (`sample_and_hold()`) — forward-fills each vital/lab value up to its clinical hold time (e.g., 8 hours for a blood gas, 24 hours for a full metabolic panel). This replicates the clinical assumption that the last recorded value is still valid until the next measurement.
-2. **KNN imputation** (`handle_missing_values()`) — for values still missing after sample-and-hold, a KNN imputer fills remaining gaps using the closest neighbours across all features.
+1. Columns with > 80% missingness are dropped entirely.
+2. Columns with < 5% missingness: linear interpolation of internal gaps per patient.
+3. Remaining columns: KNN imputation (`n_neighbors=1` by default) in patient-aligned chunks of ~10,000 rows to avoid imputing across patient boundaries.
 
 #### 3g. Derived Variables & Scores
 
-`calculate_derived_variables()` computes:
+`calculate_derived_variables()` computes (all require imputed values — must follow step 3f):
 
 | Feature | Description |
 |---|---|
@@ -189,22 +238,33 @@ These features encode the *pattern* of measurement, which is clinically informat
 | `sofa_liver` | SOFA liver sub-score (0–4, from bilirubin) |
 | `sofa_cv` | SOFA cardiovascular sub-score (0–4, from MAP + vasopressors) |
 | `sofa_cns` | SOFA CNS sub-score (0–4, from GCS) |
-| `sofa_renal` | SOFA renal sub-score (0–4, from creatinine / UO) |
-| `sofa_score` | Total SOFA score (sum of above) |
+| `sofa_renal` | SOFA renal sub-score (0–4, creatinine takes priority over UO) |
+| `sofa_score` | Total SOFA score (0–24, sum of sub-scores) |
 | `sirs_score` | SIRS criteria count (0–4, from temp, HR, RR/PaCO₂, WBC) |
 
-#### 3h. Sepsis & Septic Shock Labels
+#### 3h. Exclusion Criteria
 
-- **`add_infection_and_sepsis_flag()`** — marks each timestep with `infection` (within the defined onset window) and `sepsis` (infection + SOFA ≥ 2).
-- **`add_septic_shock_flag()`** — marks `septic_shock` where the Sepsis-3 criteria are met: sepsis + MAP < 65 mmHg + lactate > 2 mmol/L + rolling 12-hour fluid ≥ 2,000 mL (despite resuscitation), requiring vasopressors.
+`apply_exclusion_criteria()` removes entire stays (all timesteps) where:
 
-#### 3i. Exclusion Criteria
+1. `uo_step > 12,000 mL` in any 4-hour window — physiologically implausible, flags bad sensor data.
+2. `fluid_step > 10,000 mL` in any 4-hour window — same rationale.
+3. Hospital death (`morta_hosp = 1`) within 24 hours of the first recorded measurement — insufficient trajectory length.
 
-`apply_exclusion_criteria()` removes entire stays where:
+#### 3i. Sepsis & Septic Shock Labels
 
-1. `uo_step > 12,000 ml` in any 4-hour window (physiologically implausible).
-2. `fluid_step > 10,000 ml` in any 4-hour window (physiologically implausible).
-3. Hospital death within 24 hours of the first recorded measurement (too early to capture useful trajectories).
+Both labels use a **0/1/2 censoring scheme**: 0 = criterion never met, 1 = onset timestep, 2 = post-onset (censored).
+
+- **`add_infection_and_sepsis_flag()`**
+  - `infection_active` (0/1): 1 when `onset_time` is known AND `timestamp ≥ onset_time`.
+  - `sepsis` (0/1/2): onset = first timestep where `infection_active = 1` AND `sofa_score ≥ 2`. Non-septic stays (no confirmed `onset_time`) always have `sepsis = 0`.
+
+- **`add_septic_shock_flag()`**
+  - `septic_shock` (0/1/2): onset = first timestep where **all five** of the following hold simultaneously:
+    1. `sepsis ∈ {1, 2}` — active sepsis established.
+    2. `map < 65 mmHg` — persistent hypotension.
+    3. `lactate > 2.0 mmol/L` — hyperlactataemia.
+    4. `vaso_max > 0` — vasopressors required.
+    5. Rolling 12-hour fluid sum ≥ 2,000 mL (3 × 4-h windows) — adequate resuscitation attempted.
 
 ---
 
@@ -213,7 +273,7 @@ These features encode the *pattern* of measurement, which is clinically informat
 The final dataset is saved to:
 
 ```
-data/processed_files/sepsis_trajectories_4h.parquet
+data/processed/sepsis_trajectories_4h.parquet
 ```
 
 Each row is one 4-hour timestep for one patient. Key columns:
@@ -221,36 +281,39 @@ Each row is one 4-hour timestep for one patient. Key columns:
 | Column | Description |
 |---|---|
 | `stay_id` | ICU stay identifier |
-| `timestep` | Index 1–25 (1 = 24h before onset, 13 = onset, 25 = 72h after) |
+| `timestep` | 1-indexed bin number (1 = first bin from 24 h before `anchor_time`) |
 | `timestamp` | Unix timestamp of the grid cell start |
-| `onset_time` | Suspected infection onset time |
+| `onset_time` | Presumed infection onset time (NaN for non-septic stays) |
 | `gender`, `age` | Demographics |
 | `charlson_comorbidity_index` | Comorbidity burden |
 | `morta_hosp`, `morta_90` | Outcome labels |
 | `<vital/lab>` | Cleaned, imputed clinical measurements |
-| `<lab>_measured` | Missingness indicator (pre-imputation) |
-| `hours_since_<lab>` | Time since last real measurement |
-| `fluid_step`, `fluid_total` | Cumulative and windowed IV fluids (ml) |
-| `uo_step`, `uo_total` | Cumulative and windowed urine output (ml) |
-| `balance` | `fluid_total - uo_total` |
-| `vaso_median`, `vaso_max` | Vasopressor dose statistics |
-| `abx_given` | Binary: antibiotic given in this window |
+| `<lab>_measured` | Missingness indicator (captured before imputation) |
+| `hours_since_<lab>` | Hours since last real measurement (999.0 if never measured pre-timestep) |
+| `fluid_step`, `fluid_total` | Windowed and cumulative IV fluids (mL) |
+| `uo_step`, `uo_total` | Windowed and cumulative urine output (mL) |
+| `balance` | `fluid_total − uo_total` |
+| `vaso_median`, `vaso_max` | Vasopressor dose statistics (standardised rate) |
+| `abx_given` | 1 if any antibiotic was active in this window |
+| `hours_since_first_abx` | Hours from first antibiotic start to end of this window |
+| `num_abx` | Count of distinct antibiotics active in this window |
 | `sofa_score` | Total SOFA score |
 | `sirs_score` | SIRS criteria count |
-| `sepsis` | Binary sepsis label |
-| `septic_shock` | Binary septic shock label |
+| `infection_active` | 1 if confirmed infection is active at this timestep |
+| `sepsis` | 0 = no sepsis, 1 = onset timestep, 2 = post-onset |
+| `septic_shock` | 0 = no shock, 1 = onset timestep, 2 = post-onset |
 
 ---
 
 ## Re-running from a Checkpoint
 
-The pipeline checks for the existence of intermediate files before each phase. To force a phase to re-run, delete its output file:
-
-| Phase | Checkpoint file to delete |
+| Phase | How to force re-run |
 |---|---|
-| Phase 1 (Extraction) | Any file in `data/processed_files/` (e.g. `cohort.csv`) |
-| Phase 2 (Cohort) | `data/processed_files/cohort.csv` |
-| Phase 3 (Trajectories) | `data/processed_files/sepsis_trajectories_4h.parquet` |
+| Phase 1 (Extraction) | Delete the relevant CSV(s) from `data/extracted/` |
+| Phase 2 (Cohort) | Delete `data/processed/cohort.csv` |
+| Phase 3 (Trajectories) | Delete `data/processed/sepsis_trajectories_4h.parquet` |
+
+Phase 3 has no mid-phase checkpoint — a failure restarts from the beginning of Phase 3.
 
 ---
 

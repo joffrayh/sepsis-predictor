@@ -104,9 +104,7 @@ def calculate_readmissions(demog, cutoff_days=30):
     # comparison is valid regardless of how timestamps were loaded. NaT becomes NaN.
     for col in ("admittime", "dischtime"):
         if pd.api.types.is_datetime64_any_dtype(demog[col]):
-            demog[col] = (
-                demog[col] - pd.Timestamp("1970-01-01")
-            ) / pd.Timedelta("1s")
+            demog[col] = (demog[col] - pd.Timestamp("1970-01-01")) / pd.Timedelta("1s")
 
     demog["prev_dischtime"] = demog.groupby("subject_id")["dischtime"].shift(1)
 
@@ -408,9 +406,7 @@ def build_and_save_cohorts(config, path_config):
 
     bacterio = process_microbio_data(data["microbio"], data["culture"])
     demog = process_demog_data(data["demog"])
-    demog = calculate_readmissions(
-        demog, cutoff_days=config["readmission_window_days"]
-    )
+    demog = calculate_readmissions(demog, cutoff_days=config["readmission_window_days"])
     bacterio, data["abx"] = fill_missing_icustay_ids(
         bacterio,
         demog,

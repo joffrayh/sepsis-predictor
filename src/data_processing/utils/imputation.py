@@ -221,9 +221,7 @@ def handle_missing_values(df, missing_threshold=0.8, knn_neighbors=1):
     return df
 
 
-def add_missingness_features(
-    df, lab_cols=None, timestep_hours=4
-):
+def add_missingness_features(df, lab_cols=None, timestep_hours=4):
     """
     Add binary measurement indicators and time-since-last-measurement features
     for critical labs, capturing informative missingness before imputation.
