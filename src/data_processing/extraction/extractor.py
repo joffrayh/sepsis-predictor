@@ -10,29 +10,39 @@ import duckdb
 
 class MIMICExtractor:
     """
-    Unified extractor for MIMIC-IV raw CSV files using DuckDB.
+    Stateful extractor for MIMIC-IV raw data using an in-process DuckDB connection.
 
-    Reads directly from the raw ``.csv.gz`` files — no running database
-    server required.  Each MIMIC-IV table is registered as a DuckDB view
-    under the ``mimiciv_hosp`` or ``mimiciv_icu`` schema so that the SQL
-    queries in ``extraction_metadata.json`` work without modification.
+    On construction, registers every ``.csv.gz`` file under ``hosp/`` and ``icu/``
+    as a DuckDB view so that the SQL in ``extraction_metadata.json`` can reference
+    tables by schema-qualified name without a running PostgreSQL server. The
+    connection persists across all ``extract_table`` calls and must be released
+    via ``close()`` when extraction is complete.
     """
 
     def __init__(
         self,
-        raw_data_dir="data/raw/mimic-iv-3.1",
-        export_dir="data/processed_files",
+        raw_data_dir,
+        export_dir,
     ):
         """
-        Initialise the extractor and register all MIMIC-IV tables as views.
+        Open an in-process DuckDB connection and register all MIMIC-IV tables as views.
 
         Parameters
         ----------
         raw_data_dir : str
-            Path to the top-level MIMIC-IV directory containing ``hosp/`` and
+            Path to the top-level MIMIC-IV directory. Must contain ``hosp/`` and
             ``icu/`` subdirectories of ``.csv.gz`` files.
         export_dir : str
-            Directory where extracted pipe-delimited ``.csv`` files are written.
+            Destination directory for extracted pipe-delimited CSVs. Created if
+            absent. Resolved to an absolute path at construction time — pass an
+            absolute path if the working directory may change between construction
+            and extraction.
+
+        Notes
+        -----
+        The DuckDB connection is in-process (no socket, no server, no credentials).
+        ``close()`` must be called when extraction is complete to release file handles
+        and DuckDB resources; ``main.py`` ensures this in a ``finally`` block.
         """
         self.raw_data_dir = raw_data_dir
         self.export_dir = os.path.join(os.getcwd(), export_dir)
@@ -42,7 +52,20 @@ class MIMICExtractor:
         self._register_views()
 
     def _register_views(self):
-        """Register each MIMIC-IV table as a DuckDB view under its schema."""
+        """
+        Register all MIMIC-IV ``.csv.gz`` files as DuckDB views under their schema.
+
+        Files under ``hosp/`` become ``mimiciv_hosp.<stem>`` views; files under
+        ``icu/`` become ``mimiciv_icu.<stem>`` views, where ``<stem>`` is the
+        filename with ``.csv.gz`` stripped. Every file present is registered
+        regardless of whether it appears in ``extraction_metadata.json`` —
+        unused views are harmless.
+
+        Notes
+        -----
+        File paths are normalised to forward slashes before embedding in SQL to
+        ensure DuckDB resolves them correctly on both POSIX and Windows systems.
+        """
         schema_subdirs = {
             "mimiciv_hosp": os.path.join(self.raw_data_dir, "hosp"),
             "mimiciv_icu": os.path.join(self.raw_data_dir, "icu"),
@@ -51,6 +74,7 @@ class MIMICExtractor:
             self.conn.execute(f"CREATE SCHEMA IF NOT EXISTS {schema}")
             for gz_path in glob.glob(os.path.join(directory, "*.csv.gz")):
                 table_name = os.path.basename(gz_path).replace(".csv.gz", "")
+                # DuckDB requires forward slashes in embedded SQL path strings
                 abs_path = os.path.abspath(gz_path).replace("\\", "/")
                 self.conn.execute(
                     f"CREATE VIEW {schema}.{table_name} AS "
@@ -62,9 +86,9 @@ class MIMICExtractor:
         """
         Normalise a query for DuckDB execution.
 
-        Strips the PostgreSQL-specific ``CREATE TEMP TABLE ... AS`` prefix
-        used by the ``demog`` query and any trailing semicolons, leaving a
-        plain SELECT / CTE that can be wrapped in a DuckDB COPY statement.
+        Strip the PostgreSQL-specific ``CREATE TEMP TABLE ... AS`` prefix and
+        trailing semicolons from a raw SQL string, yielding a plain SELECT or
+        CTE that can be embedded in a DuckDB ``COPY (...) TO ...`` statement.
 
         Parameters
         ----------
@@ -74,7 +98,14 @@ class MIMICExtractor:
         Returns
         -------
         str
-            Clean SELECT query suitable for ``COPY (...) TO ...``.
+            Clean SELECT or CTE string with no leading DDL and no trailing
+            semicolon.
+
+        Notes
+        -----
+        The ``CREATE TEMP TABLE`` stripping exists solely to handle the one
+        legacy PostgreSQL-style query in the metadata (``demog``). The regex
+        is a no-op on all other queries.
         """
         query = re.sub(
             r"^\s*CREATE\s+TEMP\s+TABLE\s+\w+\s+AS\s*",
@@ -86,19 +117,29 @@ class MIMICExtractor:
 
     def _run_with_timer(self, query, output_path):
         """
-        Execute a DuckDB COPY query with a live elapsed-time and throughput display.
+        Execute a DuckDB COPY query with a live elapsed-time and write-speed display.
 
-        The ticker samples the output file size every 0.4 s and computes a
-        rolling write speed over a 5-sample window.  Both ``MB written`` and
-        ``MB/s`` are suppressed until the first bytes appear on disk (DuckDB
-        may buffer briefly before the first flush).
+        A daemon ticker thread wakes every 0.4 s, samples the output file size,
+        and computes a rolling MB/s estimate over a 5-sample window. The actual
+        export runs in the calling thread; the ticker is joined before the method
+        returns even if the ``COPY`` raises.
 
         Parameters
         ----------
         query : str
-            Prepared SELECT query to execute.
+            Prepared SELECT query (output of ``_prepare_query``).
         output_path : str
-            Absolute path for the output CSV file.
+            Absolute forward-slash path for the output CSV.
+
+        Notes
+        -----
+        Output is always written as a pipe-delimited CSV with a header row
+        (``DELIMITER '|'``, ``HEADER``). All downstream readers must use
+        ``sep="|"``.
+
+        The ticker thread is a daemon and is unconditionally joined in a
+        ``finally`` block, so the progress display is always cleaned up
+        regardless of whether the export succeeds or fails.
         """
         done = threading.Event()
         start = time.time()
@@ -121,6 +162,8 @@ class MIMICExtractor:
 
                 mb_written = written / 1_048_576
                 speed_str = ""
+                # Suppress speed until at least two samples with non-zero bytes
+                # exist — avoids division-by-zero on fast queries that buffer before flush
                 if len(samples) >= 2 and written > 0:
                     dt = samples[-1][0] - samples[0][0]
                     db = samples[-1][1] - samples[0][1]
@@ -156,7 +199,7 @@ class MIMICExtractor:
 
     def extract_all(
         self,
-        metadata_path="src/data_processing/extraction/extraction_metadata.json",
+        metadata_path,
         tables=None,
     ):
         """
@@ -165,9 +208,16 @@ class MIMICExtractor:
         Parameters
         ----------
         metadata_path : str
-            Path to the extraction_metadata.json configuration file.
+            Path to ``extraction_metadata.json``.
         tables : list of str, optional
-            If provided, only extracts the named table keys.
+            Subset of table keys to extract. If ``None``, all entries are
+            extracted.
+
+        Notes
+        -----
+        Extraction order follows JSON insertion order (Python 3.7+ dict
+        ordering). Tables are independent — the order has no semantic
+        significance and does not affect downstream phases.
         """
         with open(metadata_path) as f:
             metadata = json.load(f)
@@ -179,18 +229,27 @@ class MIMICExtractor:
 
     def extract_table(self, name, conf, index=None, total=None):
         """
-        Extract a single table to a pipe-delimited CSV file.
+        Extract a single table to a pipe-delimited CSV.
 
         Parameters
         ----------
         name : str
-            Logical name of the table (used for logging).
+            Logical table name used for progress logging.
         conf : dict
-            Table configuration entry from extraction_metadata.json.
+            Entry from ``extraction_metadata.json``. Must contain ``"query"``
+            (raw SQL) and ``"file_name"`` (output stem without ``.csv``).
         index : int, optional
-            1-based position of this table in the extraction sequence.
+            1-based position of this table in the current extraction run,
+            used for the ``[N/M]`` log prefix.
         total : int, optional
-            Total number of tables being extracted in this run.
+            Total number of tables in this run.
+
+        Notes
+        -----
+        Skips silently if the output CSV already exists, providing a per-table
+        checkpoint for interrupted runs. A partially written file from a
+        previous crash would pass this check and be treated as complete —
+        delete the suspect CSV manually before re-running if results look wrong.
         """
         counter = f" [{index}/{total}]" if index is not None else ""
         print(f"\n--- Extracting {name}{counter} ---")
@@ -201,6 +260,7 @@ class MIMICExtractor:
             return
 
         query = self._prepare_query(conf["query"])
+        # DuckDB requires forward slashes in embedded SQL path strings
         output_path = os.path.abspath(output_csv).replace("\\", "/")
 
         print("  Running query...")

@@ -4,10 +4,50 @@ import pandas as pd
 
 def calculate_derived_variables(df):
     """
-    Calculate derived variables such as P/F ratio (arterial oxygen pressure / FiO2),
-    Shock Index (heart rate / systolic blood pressure), SOFA score and SIRS criteria.
+    Compute derived clinical features and scores from imputed measurements.
+
+    Must run **after** KNN imputation — SOFA sub-scores and SIRS criteria
+    require non-NaN values for ``pf_ratio``, ``platelets``, ``bilirubin_total``,
+    ``map``, ``gcs``, ``creatinine``, ``uo_step``, ``temp_C``, ``heart_rate``,
+    ``respiratory_rate``, ``arterial_co2_pressure``, and ``wbc``.
+
+    Also applies several preprocessing corrections before scoring:
+    ``gender`` shift, ``age`` de-identification cap, ``mechvent`` binarisation,
+    ``charlson_comorbidity_index`` median fill, and zero-fill for vasopressor columns.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Trajectory DataFrame after KNN imputation. Must contain all clinical
+        measurement columns required for SOFA and SIRS scoring.
+
+    Returns
+    -------
+    pd.DataFrame
+        Input DataFrame with the following columns added: ``pf_ratio``,
+        ``shock_index``, ``sofa_resp``, ``sofa_coag``, ``sofa_liver``,
+        ``sofa_cv``, ``sofa_cns``, ``sofa_renal``, ``sofa_score``,
+        ``sirs_score``. Mutated in place and returned.
+
+    Notes
+    -----
+    SOFA sub-scores use ``pd.cut`` with ``right=False`` (left-inclusive bins)
+    and are filled with 0 where inputs are NaN, per the Sepsis-3 scoring convention.
+
+    SOFA cardiovascular uses ``np.select`` with a priority order: missing data
+    \u2192 0; MAP \u2265 70 \u2192 0; MAP 65\u201370 \u2192 1; MAP < 65 \u2192 2; ``vaso_max`` \u2264 0.1 \u2192 3;
+    ``vaso_max`` > 0.1 \u2192 4.
+
+    SOFA renal uses creatinine when available; falls back to ``uo_step`` (the
+    4-hour urine output sum) only when creatinine is NaN.
+
+    ``shock_index`` infinite values (zero SBP) are nullified then filled with
+    the column mean.
     """
+    # MIMIC-IV encodes gender as 1=Female/2=Male; shift to 0/1
     df["gender"] = df["gender"] - 1
+    # MIMIC-IV de-identification caps age at 91 for patients ≥ 91 years old;
+    # some rows encode this as a large integer rather than 91
     df.loc[df["age"] > 150, "age"] = 91.4
     df["mechvent"] = df["mechvent"].fillna(0)
     df.loc[df["mechvent"] > 0, "mechvent"] = 1
@@ -64,7 +104,8 @@ def calculate_derived_variables(df):
         .astype(int)
     )
 
-    # SOFA cardiovascular — depends on both MAP and vaso, use np.select
+    # SOFA cardiovascular — np.select priority order matters: missing-data case
+    # first, then MAP thresholds, then vasopressor dose
     map_ = df["map"]
     vaso = df["vaso_max"]
     cv_conditions = [
@@ -91,7 +132,7 @@ def calculate_derived_variables(df):
         .astype(int)
     )
 
-    # SOFA renal — creatinine takes priority over UO
+    # SOFA renal — creatinine takes priority; uo_step (4 h urine sum) is the fallback
     cr = df["creatinine"]
     uo = df["uo_step"]
     cr_score = pd.cut(
@@ -130,11 +171,35 @@ def calculate_derived_variables(df):
 
 def apply_exclusion_criteria(df, exclusion_cfg):
     """
-    Apply exclusion criteria to filter out patients who do not meet the study
-    criteria. The exclusion criteria include:
-    1. Extreme UO (>12000 ml in a 4h window)
-    2. Extreme Fluid (>10000 ml in a 4h window)
-    3. Early Death (death within 24 hours of first measurement)
+    Remove entire ICU stays that meet any of three physiological plausibility
+    exclusion criteria.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Trajectory DataFrame with ``stay_id``, ``uo_step``, ``fluid_step``,
+        ``morta_hosp``, and ``timestamp`` columns.
+    exclusion_cfg : dict
+        Exclusion thresholds. Required keys:
+
+        - ``max_uo_per_window_ml`` \u2014 UO ceiling per 4-hour window (mL).
+        - ``max_fluid_per_window_ml`` \u2014 fluid ceiling per 4-hour window (mL).
+        - ``early_death_hours`` \u2014 maximum stay duration (hours) for hospital
+          deaths to be considered insufficiently informative.
+
+    Returns
+    -------
+    pd.DataFrame
+        Filtered DataFrame with all timesteps for excluded stays removed.
+
+    Notes
+    -----
+    Criteria are applied sequentially on the already-filtered result: exclusion
+    counts reflect the population *after* prior criteria have been applied, not
+    the original cohort size.
+
+    Early death is computed from the ``timestamp`` span (Unix seconds) of the
+    stay, not from a mortality date column.
     """
     max_uo = exclusion_cfg["max_uo_per_window_ml"]
     max_fluid = exclusion_cfg["max_fluid_per_window_ml"]
@@ -143,17 +208,17 @@ def apply_exclusion_criteria(df, exclusion_cfg):
     print("Applying exclusion criteria...")
     excluded_counts = {}
 
-    # 1. Extreme UO
+    # Extreme UO
     extreme_uo_stays = df[df["uo_step"] > max_uo]["stay_id"].unique()
     df = df[~df["stay_id"].isin(extreme_uo_stays)]
     excluded_counts["extreme_uo"] = len(extreme_uo_stays)
 
-    # 2. Extreme Fluid
+    # Extreme Fluid
     extreme_fluid_stays = df[df["fluid_step"] > max_fluid]["stay_id"].unique()
     df = df[~df["stay_id"].isin(extreme_fluid_stays)]
     excluded_counts["extreme_fluid"] = len(extreme_fluid_stays)
 
-    # 3. Early Death
+    # Early Death
     first_times = df.groupby("stay_id")["timestamp"].min()
     last_times = df.groupby("stay_id")["timestamp"].max()
     morta = df.groupby("stay_id")["morta_hosp"].first()
@@ -171,37 +236,93 @@ def apply_exclusion_criteria(df, exclusion_cfg):
     return df
 
 
-def add_septic_shock_flag(df, shock_cfg):
+def add_infection_and_sepsis_flag(df):
     """
-    Add septic shock flags based on the Sepsis-3 criteria, which defines septic
-    shock as sepsis with persistent hypotension requiring vasopressors to
-    maintain MAP ≥ 65 mm Hg, and having a serum lactate level > 2 mmol/L despite
-    adequate volume resuscitation.
+    Assign ``infection_active`` and ``sepsis`` columns using the Sepsis-3 definition.
 
-    Onset criteria (all must hold at the same timestep):
-
-    1. Active sepsis (``sepsis`` = 1 or 2).
-    2. MAP < 65 mmHg.
-    3. Lactate > 2 mmol/L.
-    4. Vasopressors active (``vaso_max`` > 0).
-    5. Rolling 12-hour fluid intake ≥ 2,000 mL (3 × 4 h timesteps), confirming
-       that hypotension persists despite adequate volume resuscitation.
-
-    Flags: 0 = no shock, 1 = onset timestep, 2 = post-onset censored.
+    ``sepsis`` uses a 0/1/2 censoring scheme: 0 = no sepsis; 1 = onset timestep
+    (first per stay where infection is active and SOFA \u2265 2); 2 = all subsequent
+    timesteps after onset.
 
     Parameters
     ----------
     df : pd.DataFrame
-        Trajectory dataframe containing ``sepsis``, ``map``, ``lactate``,
+        Trajectory DataFrame. Must contain ``onset_time``, ``timestamp``,
+        ``stay_id``, and ``sofa_score`` columns.
+
+    Returns
+    -------
+    pd.DataFrame
+        Input DataFrame sorted by ``(stay_id, timestamp)`` with
+        ``infection_active`` (0/1) and ``sepsis`` (0/1/2) columns added.
+        Temporary ``has_sepsis`` helper column is dropped before return.
+
+    Notes
+    -----
+    Non-septic stays (``onset_time`` is NaN) always have ``sepsis = 0`` \u2014
+    the ``infection_active`` check short-circuits to False for those rows.
+
+    SOFA \u2265 2 alone is not sufficient; a confirmed infection onset is required.
+    """
+    print("Adding sepsis flags...")
+    df = df.sort_values(["stay_id", "timestamp"])
+
+    df["infection_active"] = 0
+
+    is_actively_infected = df["onset_time"].notna() & (
+        df["timestamp"] >= df["onset_time"]
+    )
+    df.loc[is_actively_infected, "infection_active"] = 1
+
+    sepsis_condition = (df["infection_active"] == 1) & (df["sofa_score"] >= 2)
+
+    df["sepsis"] = 0
+    first_sepsis = df[sepsis_condition].groupby("stay_id").head(1).index
+    df.loc[first_sepsis, "sepsis"] = 1
+
+    # Cumsum propagates after the onset row: post-onset rows have has_sepsis == 1
+    # and sepsis == 0, which is the exact mask for the censored label
+    df["has_sepsis"] = df.groupby("stay_id")["sepsis"].cumsum()
+    censored_mask = (df["has_sepsis"] == 1) & (df["sepsis"] == 0)
+    df.loc[censored_mask, "sepsis"] = 2
+
+    return df.drop(columns=["has_sepsis"])
+
+
+def add_septic_shock_flag(df, shock_cfg):
+    """
+    Assign a ``septic_shock`` column using the Sepsis-3 definition, with the
+    same 0/1/2 censoring scheme as ``sepsis``.
+
+    Onset requires all five criteria to hold simultaneously:
+    active sepsis (``sepsis`` ∈ {1, 2}), MAP below threshold, lactate above
+    threshold, vasopressors active, and adequate rolling fluid resuscitation.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Trajectory DataFrame. Must contain ``sepsis``, ``map``, ``lactate``,
         ``vaso_max``, ``fluid_step``, ``stay_id``, and ``timestamp`` columns.
+        Requires ``sepsis`` to have been assigned by
+        ``add_infection_and_sepsis_flag`` first.
     shock_cfg : dict
-        Config dict. Keys: ``map_threshold_mmhg``, ``lactate_threshold_mmol``,
+        Shock threshold configuration. Required keys:
+        ``map_threshold_mmhg``, ``lactate_threshold_mmol``,
         ``fluid_resuscitation_ml``, ``fluid_window_timesteps``.
 
     Returns
     -------
     pd.DataFrame
-        Input dataframe with ``septic_shock`` column added.
+        Input DataFrame sorted by ``(stay_id, timestamp)`` with
+        ``septic_shock`` (0/1/2) column added. Temporary ``has_shock`` and
+        ``fluid_rolling_12h`` columns are dropped before return.
+
+    Notes
+    -----
+    ``septic_shock = 2`` (post-onset censored) can appear without a preceding
+    ``septic_shock = 1`` in the output if the onset timestep falls outside the
+    observable trajectory window — matching the same censoring design as
+    ``sepsis``.
     """
     map_threshold = shock_cfg["map_threshold_mmhg"]
     lactate_threshold = shock_cfg["lactate_threshold_mmol"]
@@ -236,33 +357,3 @@ def add_septic_shock_flag(df, shock_cfg):
     df.loc[censored_mask, "septic_shock"] = 2
 
     return df.drop(columns=["has_shock", "fluid_rolling_12h"])
-
-
-def add_infection_and_sepsis_flag(df):
-    """
-    Add sepsis flags based on Sepsis-3 criteria: SOFA >= 2 AND confirmed
-    infection (onset_time is not NaN). Non-septic patients (onset_time is NaN)
-    will always have sepsis = 0.
-    Flags: 0 = no sepsis, 1 = onset timestep, 2 = post-onset (censored).
-    """
-    print("Adding sepsis flags...")
-    df = df.sort_values(["stay_id", "timestamp"])
-
-    df["infection_active"] = 0
-
-    is_actively_infected = df["onset_time"].notna() & (
-        df["timestamp"] >= df["onset_time"]
-    )
-    df.loc[is_actively_infected, "infection_active"] = 1
-
-    sepsis_condition = (df["infection_active"] == 1) & (df["sofa_score"] >= 2)
-
-    df["sepsis"] = 0
-    first_sepsis = df[sepsis_condition].groupby("stay_id").head(1).index
-    df.loc[first_sepsis, "sepsis"] = 1
-
-    df["has_sepsis"] = df.groupby("stay_id")["sepsis"].cumsum()
-    censored_mask = (df["has_sepsis"] == 1) & (df["sepsis"] == 0)
-    df.loc[censored_mask, "sepsis"] = 2
-
-    return df.drop(columns=["has_sepsis"])

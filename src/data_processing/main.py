@@ -38,7 +38,25 @@ def parse_args():
 
 
 def main():
-    """Execute the full MIMIC-IV sepsis data pipeline end-to-end."""
+    """
+    Execute the full MIMIC-IV sepsis data pipeline end-to-end.
+
+    Reads pipeline configuration from the YAML file specified by ``--config``
+    and runs three sequential phases: (1) raw data extraction, (2) static cohort
+    construction, (3) trajectory building and feature engineering.
+
+    Notes
+    -----
+    Phase 1 is skipped if ``--raw-data-dir`` is not provided; extracted CSVs
+    are assumed to already exist in ``paths.extracted_dir``.
+
+    Phase 2 is checkpointed: if ``cohort.csv`` already exists in
+    ``paths.processed_dir``, it is loaded directly and cohort construction is
+    skipped.
+
+    The final feature matrix is written to ``paths.processed_dir /
+    paths.output_filename`` as a Parquet file.
+    """
     args = parse_args()
 
     with open(args.config) as f:
@@ -65,6 +83,7 @@ def main():
                 cfg["paths"],
             )
             del bacterio, demog, raw_data_dict
+            # Free cohort-builder intermediates before loading the large measurement tables
             gc.collect()
         else:
             print("Cohort file already exists. Loading cohort...")
@@ -84,7 +103,7 @@ def main():
 
         chunk_size = cfg["trajectories"]["chunk_size"]
 
-        # Load high volume chunked data memory-safely
+        # chartevents and labevents are too large to load in one pass
         print("Loading Chartevents chunked...")
         ce_df = load_and_filter_chunked(
             os.path.join(cfg["paths"]["extracted_dir"], "chartevents.csv"),
