@@ -396,11 +396,11 @@ def build_and_save_cohorts(config, path_config):
 
     data = {}
     for key, filename in files.items():
-        data[key] = pd.read_csv(f"{input_dir}/{filename}", sep="|", low_memory=False)
+        data[key] = pd.read_csv(os.path.join(input_dir, filename), sep="|", low_memory=False)
 
     print("Loading and combining lab data...")
-    labs_ce = pd.read_csv(f"{input_dir}/labs_ce.csv", sep="|", low_memory=False)
-    labs_le = pd.read_csv(f"{input_dir}/labs_le.csv", sep="|", low_memory=False)
+    labs_ce = pd.read_csv(os.path.join(input_dir, "labs_ce.csv"), sep="|", low_memory=False)
+    labs_le = pd.read_csv(os.path.join(input_dir, "labs_le.csv"), sep="|", low_memory=False)
     labs_le = labs_le.rename(columns={"timestp": "charttime"})
     data["labU"] = pd.concat([labs_ce, labs_le], sort=False, ignore_index=True)
 
@@ -423,11 +423,11 @@ def build_and_save_cohorts(config, path_config):
 
     print("Saving processed files...")
     os.makedirs(output_dir, exist_ok=True)
-    cohort.to_csv(f"{output_dir}/cohort.csv", sep="|", index=False)
-    bacterio.to_csv(f"{output_dir}/bacterio_processed.csv", sep="|", index=False)
-    demog.to_csv(f"{output_dir}/demog_processed.csv", sep="|", index=False)
-    data["labU"].to_csv(f"{output_dir}/labu.csv", sep="|", index=False)
-    data["abx"].to_csv(f"{output_dir}/abx_processed.csv", sep="|", index=False)
+    cohort.to_csv(os.path.join(output_dir, "cohort.csv"), sep="|", index=False)
+    bacterio.to_csv(os.path.join(output_dir, "bacterio_processed.csv"), sep="|", index=False)
+    demog.to_csv(os.path.join(output_dir, "demog_processed.csv"), sep="|", index=False)
+    data["labU"].to_csv(os.path.join(output_dir, "labu.csv"), sep="|", index=False)
+    data["abx"].to_csv(os.path.join(output_dir, "abx_processed.csv"), sep="|", index=False)
 
     print("Cohort building complete!")
     return cohort, bacterio, demog, data
