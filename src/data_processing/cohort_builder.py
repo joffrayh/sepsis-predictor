@@ -258,4 +258,4 @@ def build_and_save_cohorts(config):
         data["abx"].to_csv(f"{output_dir}/abx_processed.csv", sep="|", index=False)
 
     print("Cohort building complete!")
-    return onset, bacterio, demog, data
+    return cohort, bacterio, demog, data
