@@ -31,7 +31,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def load_measurement_mappings(path):
     """
-    Parse ``measurement_mappings.json`` into the three derived structures used by Phase 3.
+    Parse ``measurement_mappings.json`` into derived structures for Phase 3.
 
     Parameters
     ----------
@@ -45,8 +45,8 @@ def load_measurement_mappings(path):
         contains ``"codes"`` (list of MIMIC ``itemid`` ints) and optionally
         ``"hold_time"`` (hours for sample-and-hold).
     code_to_concept : dict
-        Flat ``{itemid_int: concept_name}`` lookup. Keys are Python ints, matching
-        the int64 ``itemid`` dtype in the extracted CSVs.
+        Flat ``{itemid_int: concept_name}`` lookup. Keys are Python ints,
+        matching the int64 ``itemid`` dtype in the extracted CSVs.
     hold_times : dict
         ``{concept_name: max_hold_hours}`` for concepts that have a
         ``"hold_time"`` entry. Passed directly to ``sample_and_hold``.
@@ -78,18 +78,18 @@ def load_and_filter_chunked(
     chunk_size=1_000_000,
 ):
     """
-    Stream a large pipe-delimited CSV in chunks, retaining only rows relevant to
-    the target cohort and time window.
+    Stream a pipe-delimited CSV in chunks, filtering to cohort and time window.
 
     Parameters
     ----------
     filepath : str
         Path to the pipe-delimited CSV to read.
     valid_stays : array-like
-        ``stay_id`` values to keep. Applied to every chunk before any other filter.
+        ``stay_id`` values to keep. Applied to every chunk before any
+        other filter.
     onset_df : pd.DataFrame, optional
-        DataFrame with ``stay_id`` and ``anchor_time`` (Unix seconds). Required for
-        time-window filtering; pass ``None`` to skip.
+        DataFrame with ``stay_id`` and ``anchor_time`` (Unix seconds).
+        Required for time-window filtering; pass ``None`` to skip.
     time_col : str, optional
         Timestamp column in the CSV to compare against ``anchor_time``. Must be
         numeric Unix seconds. Required for time-window filtering.
@@ -107,14 +107,15 @@ def load_and_filter_chunked(
     Returns
     -------
     pd.DataFrame
-        Concatenated DataFrame of all retained rows, or an empty DataFrame if the
-        file does not exist or no rows pass the filters.
+        Concatenated DataFrame of all retained rows, or an empty
+        DataFrame if the file does not exist or no rows pass the filters.
 
     Notes
     -----
-    Time-window filtering is only applied when both ``onset_df`` and ``time_col``
-    are provided. The ``anchor_time`` column added during the merge is dropped
-    before the chunk is appended — it does not appear in the output.
+    Time-window filtering is only applied when both ``onset_df`` and
+    ``time_col`` are provided. The ``anchor_time`` column added during
+    the merge is dropped before the chunk is appended — it does not
+    appear in the output.
     """
     if not os.path.exists(filepath):
         print(f"Warning: {filepath} not found.")
@@ -139,7 +140,11 @@ def load_and_filter_chunked(
             if chunk.empty:
                 continue
 
-        if onset_df is not None and time_col is not None and time_col in chunk.columns:
+        if (
+            onset_df is not None
+            and time_col is not None
+            and time_col in chunk.columns
+        ):
             chunk = chunk.merge(
                 onset_df[["stay_id", "anchor_time"]], on="stay_id", how="inner"
             )
@@ -165,12 +170,13 @@ def process_patient_measurements(
     chunk_size=1_000_000,
 ):
     """
-    Map ``itemid`` codes to concept names, pivot to wide format, and merge mechvent.
+    Map ``itemid`` codes to concept names, pivot to wide format, merge mechvent.
 
-    Concatenates chart events and lab events into a long-format table, pivots to
-    wide format (one row per ``stay_id`` + ``charttime``, one column per clinical
-    concept), then merges mechanical ventilation status. Processes in ``batch_size``
-    stays at a time, writing each batch to a temporary parquet file under
+    Concatenates chart events and lab events into a long-format table,
+    pivots to wide format (one row per ``stay_id`` + ``charttime``, one
+    column per clinical concept), then merges mechanical ventilation
+    status. Processes in ``batch_size`` stays at a time, writing each
+    batch to a temporary parquet file under
     ``output_dir/_pivot_temp/`` to bound peak RAM.
 
     Parameters
@@ -179,8 +185,8 @@ def process_patient_measurements(
         Chartevents with columns ``stay_id``, ``charttime``, ``itemid``,
         ``valuenum``. Raises ``ValueError`` if empty.
     lab_df : pd.DataFrame
-        Unified lab events (``labu``) with the same columns. Raises ``ValueError``
-        if empty.
+        Unified lab events (``labu``) with the same columns. Raises
+        ``ValueError`` if empty.
     mv_df : pd.DataFrame
         Mechanical ventilation with ``stay_id``, ``charttime``, ``mechvent``.
         An empty frame is accepted — ``mechvent`` will be all NaN.
@@ -201,22 +207,26 @@ def process_patient_measurements(
 
     Notes
     -----
-    The fixed column schema for each batch is derived from *all possible concepts*
-    in ``code_to_concept``, not just those present in the current batch. This ensures
-    every batch has identical columns so ``fastparquet`` can append cleanly.
+    The fixed column schema for each batch is derived from *all possible
+    concepts* in ``code_to_concept``, not just those present in the
+    current batch. This ensures every batch has identical columns so
+    ``fastparquet`` can append cleanly.
 
-    ``pivot_table`` uses ``aggfunc="last"`` — when two measurements for the same
-    concept share an exact ``(stay_id, charttime)``, the last one by row order wins.
+    ``pivot_table`` uses ``aggfunc="last"`` — when two measurements for
+    the same concept share an exact ``(stay_id, charttime)``, the last
+    one by row order wins.
 
-    The long-format ``ce_lab`` frame is sorted on four columns *before* pivoting
-    (cheap at long format) so the resulting wide frame is already ordered and
-    ``sample_and_hold`` can skip its own expensive sort on the ~70-column wide table.
+    The long-format ``ce_lab`` frame is sorted on four columns *before*
+    pivoting (cheap at long format) so the resulting wide frame is
+    already ordered and ``sample_and_hold`` can skip its own expensive
+    sort on the ~70-column wide table.
     """
     print("Pivoting chartevents, lab events and mechvent...")
 
     if ce_df.empty:
         raise ValueError(
-            "chartevents dataframe is empty — check extracted_dir path and Phase 1 output."
+            "chartevents dataframe is empty — check extracted_dir "
+            "path and Phase 1 output."
         )
     print("\tMapping chartevents itemids to concepts...")
     int_code_to_concept = {int(k): v for k, v in code_to_concept.items()}
@@ -224,7 +234,8 @@ def process_patient_measurements(
 
     if lab_df.empty:
         raise ValueError(
-            "labevents (labu) dataframe is empty — check extracted_dir path and Phase 1 output."
+            "labevents (labu) dataframe is empty — "
+            "check extracted_dir path and Phase 1 output."
         )
 
     print("\tMapping labevents itemids to concepts...")
@@ -245,8 +256,9 @@ def process_patient_measurements(
 
     del ce_df, lab_df
 
-    # Sort on the 4-column long frame (cheap) so the pivoted wide frame comes out
-    # ordered — sample_and_hold can then skip its expensive sort on the ~70-column table
+    # Sort on the 4-column long frame (cheap) so the pivoted wide frame
+    # comes out ordered — sample_and_hold can then skip its expensive
+    # sort on the ~70-column table
     ce_lab.sort_values(["stay_id", "charttime"], inplace=True)
     ce_lab.reset_index(drop=True, inplace=True)
 
@@ -255,7 +267,9 @@ def process_patient_measurements(
         all_stay_ids[i : i + batch_size]
         for i in range(0, len(all_stay_ids), batch_size)
     ]
-    print(f"\tPivoting in {len(batches)} batches of up to {batch_size} stays...")
+    print(
+        f"\tPivoting in {len(batches)} batches of up to {batch_size} stays..."
+    )
 
     temp_dir = os.path.join(output_dir, "_pivot_temp")
     os.makedirs(temp_dir, exist_ok=True)
@@ -267,7 +281,7 @@ def process_patient_measurements(
     all_concepts = sorted(set(code_to_concept.values()))
     fixed_columns = ["stay_id", "charttime"] + all_concepts
 
-    for i, batch_stays in enumerate(
+    for _i, batch_stays in enumerate(
         tqdm(batches, desc="\tPivoting batches", ncols=100)
     ):
         batch = ce_lab[ce_lab["stay_id"].isin(batch_stays)]
@@ -311,7 +325,9 @@ def process_patient_measurements(
         mv_map = mv_clean.set_index(["stay_id", "charttime"])["mechvent"]
         del mv_clean
 
-        idx = pd.MultiIndex.from_arrays([wide_data["stay_id"], wide_data["charttime"]])
+        idx = pd.MultiIndex.from_arrays(
+            [wide_data["stay_id"], wide_data["charttime"]]
+        )
         wide_data["mechvent"] = idx.map(mv_map)
     else:
         print("WARNING: mechvent dataframe is empty.")
@@ -331,25 +347,28 @@ def standardise_patient_trajectories(
     flush_every=5000,
 ):
     """
-    Project each patient's irregular measurement timeline onto a fixed-width time grid.
+    Project each patient's measurements onto a fixed-width time grid.
 
-    Each ``timestep``-hour bin is populated with the mean of clinical measurements,
-    the sum of fluids and UO, the median and max of active vasopressor rates, and
-    antibiotic features derived from overlap with the window. Results are buffered
-    and flushed to disk in ``flush_every``-row increments, then concatenated.
+    Each ``timestep``-hour bin is populated with the mean of clinical
+    measurements, the sum of fluids and UO, the median and max of active
+    vasopressor rates, and antibiotic features derived from overlap with
+    the window. Results are buffered and flushed to disk in
+    ``flush_every``-row increments, then concatenated.
 
     Parameters
     ----------
     init_traj : pd.DataFrame
-        Wide DataFrame from ``process_patient_measurements``. **Must be pre-sorted
-        by ``(stay_id, charttime)``** — group boundaries are derived from
-        ``np.unique`` with ``return_index=True``, which assumes contiguous groups.
+        Wide DataFrame from ``process_patient_measurements``. **Must be
+        pre-sorted by ``(stay_id, charttime)``** — group boundaries are
+        derived from ``np.unique`` with ``return_index=True``, which
+        assumes contiguous groups.
     data_dict : dict
-        Secondary tables with keys ``"fluid"``, ``"vaso"``, ``"UO"``, ``"abx"``,
-        ``"demog"``. Each key is **popped** as it is consumed — the dict is mutated
-        and partially emptied after this call returns.
+        Secondary tables with keys ``"fluid"``, ``"vaso"``, ``"UO"``,
+        ``"abx"``, ``"demog"``. Each key is **popped** as it is consumed
+        — the dict is mutated and partially emptied after this call returns.
     onset : pd.DataFrame
-        Cohort with ``stay_id``, ``anchor_time``, and ``onset_time`` (Unix seconds).
+        Cohort with ``stay_id``, ``anchor_time``, and ``onset_time``
+        (Unix seconds).
     bin_hours : int, optional
         Bin width in hours (default 4).
     window_before : int, optional
@@ -359,31 +378,35 @@ def standardise_patient_trajectories(
     output_dir : str, optional
         Writable directory for ``_std_temp/chunk_N.parquet`` scratch files.
     flush_every : int, optional
-        Row count at which the in-memory buffer is flushed to disk (default 5000).
+        Row count at which the in-memory buffer is flushed to disk
+        (default 5000).
 
     Returns
     -------
     pd.DataFrame
-        One row per ``(stay_id, timestep_idx)``. Columns: ``timestep`` (1-indexed
-        bin number), ``stay_id``, ``onset_time``, ``timestamp`` (Unix seconds of
-        bin start), demographics, all concept columns from ``init_traj``, then
-        fluid, vasopressor, UO, and antibiotic aggregates.
+        One row per ``(stay_id, timestep_idx)``. Columns: ``timestep``
+        (1-indexed bin number), ``stay_id``, ``onset_time``,
+        ``timestamp`` (Unix seconds of bin start), demographics, all
+        concept columns from ``init_traj``, then fluid, vasopressor,
+        UO, and antibiotic aggregates.
 
     Notes
     -----
-    ``RuntimeWarning: Mean of empty slice`` is intentionally suppressed inside the
-    ``window_data.mean()`` call. An all-NaN column for a given bin is expected and
-    is not a data error.
+    ``RuntimeWarning: Mean of empty slice`` is intentionally suppressed
+    inside the ``window_data.mean()`` call. An all-NaN column for a
+    given bin is expected and is not a data error.
 
-    ``hours_since_first_abx`` measures hours from the first antibiotic start to the
-    *end* of the current window (``window_end``), not the window start.
+    ``hours_since_first_abx`` measures hours from the first antibiotic
+    start to the *end* of the current window (``window_end``), not the
+    window start.
 
     Stays with no chart events in ``init_traj`` are silently skipped.
     """
     print("Standardising trajectories to fixed time step...")
 
     # create hash maps for the secondary tables — pop each entry from data_dict
-    # immediately after converting so the raw DataFrames are freed before the loop
+    # immediately after converting so the raw DataFrames are freed
+    # before the loop
     fluid_grp = (
         {k: v for k, v in data_dict.pop("fluid").groupby("stay_id")}
         if "fluid" in data_dict
@@ -451,14 +474,18 @@ def standardise_patient_trajectories(
     # the full 85K-entry index dict that causes OOM before the first iteration.
     # init_traj is pre-sorted by (stay_id, charttime) so groups are contiguous.
     stay_ids_arr = init_traj["stay_id"].to_numpy()
-    unique_stay_ids, first_occurrence = np.unique(stay_ids_arr, return_index=True)
+    unique_stay_ids, first_occurrence = np.unique(
+        stay_ids_arr, return_index=True
+    )
     group_boundaries = np.append(first_occurrence, len(init_traj))
     del stay_ids_arr
 
     for i, stay_id in enumerate(
         tqdm(unique_stay_ids, desc="\tStandardising per stay_id", ncols=100)
     ):
-        patient_traj = init_traj.iloc[group_boundaries[i] : group_boundaries[i + 1]]
+        patient_traj = init_traj.iloc[
+            group_boundaries[i] : group_boundaries[i + 1]
+        ]
         start_time = anchor_dict.get(stay_id, 0)
         onset_time = onset_time_dict.get(stay_id, np.nan)
         demographics = demog_dict.get(stay_id, {})
@@ -467,7 +494,9 @@ def standardise_patient_trajectories(
         vaso_data = vaso_grp.get(stay_id, pd.DataFrame())
         uo_data = uo_grp.get(stay_id, pd.DataFrame())
         abx_data = abx_grp.get(stay_id, pd.DataFrame())
-        first_abx_time = abx_data["starttime"].min() if not abx_data.empty else np.nan
+        first_abx_time = (
+            abx_data["starttime"].min() if not abx_data.empty else np.nan
+        )
 
         # no sort needed — init_traj is pre-sorted by (stay_id, charttime)
         ct_arr = patient_traj["charttime"].to_numpy()
@@ -497,12 +526,15 @@ def standardise_patient_trajectories(
                     if col not in ["stay_id", "charttime"]
                 }
             else:
-                # Suppress "Mean of empty slice" warning when a concept column has no
-                # values in the window, this is expected and not an error
+                # Suppress "Mean of empty slice" warning when a concept
+                # column has no values in the window; this is expected
+                # and not an error
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore", RuntimeWarning)
                     with np.errstate(invalid="ignore"):
-                        measurements = window_data.mean(axis=0, skipna=True).to_dict()
+                        measurements = window_data.mean(
+                            axis=0, skipna=True
+                        ).to_dict()
 
             # fluids
             fluid_total, fluid_step = 0, 0
@@ -533,7 +565,9 @@ def standardise_patient_trajectories(
                     (uo_data["charttime"] >= window_start)
                     & (uo_data["charttime"] < window_end)
                 ]["value"].sum()
-                uo_total = uo_data[uo_data["charttime"] < window_end]["value"].sum()
+                uo_total = uo_data[uo_data["charttime"] < window_end][
+                    "value"
+                ].sum()
 
             # antibiotics
             abx_given, hrs_first_abx, num_abx = 0, 999.0, 0
@@ -652,7 +686,8 @@ def build_trajectories(
     Returns
     -------
     pd.DataFrame
-        Final feature matrix, or an empty DataFrame if no valid trajectories exist.
+        Final feature matrix, or an empty DataFrame if no valid
+        trajectories exist.
 
     Notes
     -----
@@ -663,8 +698,8 @@ def build_trajectories(
        ``handle_unit_conversions`` → ``sample_and_hold`` — applied at original
        measurement resolution, before grid standardisation.
     3. ``standardise_patient_trajectories`` — project onto fixed time grid.
-    4. ``add_missingness_features`` — **must precede imputation**; after imputation
-       all missingness indicators would be zero.
+    4. ``add_missingness_features`` — **must precede imputation**;
+       after imputation all missingness indicators would be zero.
     5. ``handle_missing_values`` — KNN imputation of residual NaNs.
     6. ``calculate_derived_variables`` — SOFA sub-scores, pf_ratio, shock_index,
        SIRS. **Must follow imputation** (operates on imputed values).
@@ -710,7 +745,9 @@ def build_trajectories(
     )
 
     # 4. Integrate Missingness Features BEFORE Imputation
-    init_traj = add_missingness_features(init_traj, timestep_hours=config["timestep"])
+    init_traj = add_missingness_features(
+        init_traj, timestep_hours=config["timestep"]
+    )
     # 5. Imputation
     init_traj = handle_missing_values(
         init_traj,
@@ -722,10 +759,14 @@ def build_trajectories(
     init_traj = calculate_derived_variables(init_traj)
 
     # 7. Exclusion Criteria
-    init_traj = apply_exclusion_criteria(init_traj, exclusion_cfg=config["exclusion"])
+    init_traj = apply_exclusion_criteria(
+        init_traj, exclusion_cfg=config["exclusion"]
+    )
 
     # 8. Labels
     init_traj = add_infection_and_sepsis_flag(init_traj)
-    init_traj = add_septic_shock_flag(init_traj, shock_cfg=config["septic_shock"])
+    init_traj = add_septic_shock_flag(
+        init_traj, shock_cfg=config["septic_shock"]
+    )
 
     return init_traj

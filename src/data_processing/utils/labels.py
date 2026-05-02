@@ -13,7 +13,8 @@ def calculate_derived_variables(df):
 
     Also applies several preprocessing corrections before scoring:
     ``gender`` shift, ``age`` de-identification cap, ``mechvent`` binarisation,
-    ``charlson_comorbidity_index`` median fill, and zero-fill for vasopressor columns.
+    ``charlson_comorbidity_index`` median fill, and zero-fill for vasopressor
+    columns.
 
     Parameters
     ----------
@@ -32,11 +33,13 @@ def calculate_derived_variables(df):
     Notes
     -----
     SOFA sub-scores use ``pd.cut`` with ``right=False`` (left-inclusive bins)
-    and are filled with 0 where inputs are NaN, per the Sepsis-3 scoring convention.
+    and are filled with 0 where inputs are NaN, per the Sepsis-3 scoring
+    convention.
 
-    SOFA cardiovascular uses ``np.select`` with a priority order: missing data
-    \u2192 0; MAP \u2265 70 \u2192 0; MAP 65\u201370 \u2192 1; MAP < 65 \u2192 2; ``vaso_max`` \u2264 0.1 \u2192 3;
-    ``vaso_max`` > 0.1 \u2192 4.
+    SOFA cardiovascular uses ``np.select`` with a priority order: missing
+    data \u2192 0; MAP \u2265 70 \u2192 0; MAP 65\u201370 \u2192 1;
+    MAP < 65 \u2192 2;
+    ``vaso_max`` \u2264 0.1 \u2192 3; ``vaso_max`` > 0.1 \u2192 4.
 
     SOFA renal uses creatinine when available; falls back to ``uo_step`` (the
     4-hour urine output sum) only when creatinine is NaN.
@@ -133,7 +136,8 @@ def calculate_derived_variables(df):
         .astype(int)
     )
 
-    # SOFA renal — creatinine takes priority; uo_step (4 h urine sum) is the fallback
+    # SOFA renal — creatinine takes priority; uo_step (4 h urine sum) is the
+    # fallback
     cr = df["creatinine"]
     uo = df["uo_step"]
     cr_score = pd.cut(
@@ -172,8 +176,7 @@ def calculate_derived_variables(df):
 
 def apply_exclusion_criteria(df, exclusion_cfg):
     """
-    Remove entire ICU stays that meet any of three physiological plausibility
-    exclusion criteria.
+    Remove ICU stays meeting any of three physiological plausibility criteria.
 
     Parameters
     ----------
@@ -184,9 +187,10 @@ def apply_exclusion_criteria(df, exclusion_cfg):
         Exclusion thresholds. Required keys:
 
         - ``max_uo_per_window_ml`` \u2014 UO ceiling per 4-hour window (mL).
-        - ``max_fluid_per_window_ml`` \u2014 fluid ceiling per 4-hour window (mL).
-        - ``early_death_hours`` \u2014 maximum stay duration (hours) for hospital
-          deaths to be considered insufficiently informative.
+        - ``max_fluid_per_window_ml`` — fluid ceiling per 4-hour
+          window (mL).
+        - ``early_death_hours`` — maximum stay duration (hours) for
+          hospital deaths considered insufficiently informative.
 
     Returns
     -------
@@ -224,7 +228,9 @@ def apply_exclusion_criteria(df, exclusion_cfg):
     last_times = df.groupby("stay_id")["timestamp"].max()
     morta = df.groupby("stay_id")["morta_hosp"].first()
     time_to_death = (last_times - first_times) / 3600
-    early_deaths = morta[(morta == 1) & (time_to_death <= early_death_hours)].index
+    early_deaths = morta[
+        (morta == 1) & (time_to_death <= early_death_hours)
+    ].index
     df = df[~df["stay_id"].isin(early_deaths)]
     excluded_counts["early_death"] = len(early_deaths)
 
@@ -239,11 +245,11 @@ def apply_exclusion_criteria(df, exclusion_cfg):
 
 def add_infection_and_sepsis_flag(df):
     """
-    Assign ``infection_active`` and ``sepsis`` columns using the Sepsis-3 definition.
+    Assign ``infection_active`` and ``sepsis`` using the Sepsis-3 definition.
 
     ``sepsis`` uses a 0/1/2 censoring scheme: 0 = no sepsis; 1 = onset timestep
-    (first per stay where infection is active and SOFA \u2265 2); 2 = all subsequent
-    timesteps after onset.
+    (first per stay where infection is active and SOFA ≥ 2); 2 = all
+    subsequent timesteps after onset.
 
     Parameters
     ----------
@@ -263,7 +269,8 @@ def add_infection_and_sepsis_flag(df):
     Non-septic stays (``onset_time`` is NaN) always have ``sepsis = 0`` \u2014
     the ``infection_active`` check short-circuits to False for those rows.
 
-    SOFA \u2265 2 alone is not sufficient; a confirmed infection onset is required.
+    SOFA \u2265 2 alone is not sufficient; a confirmed infection
+    onset is required.
     """
     print("Adding sepsis flags...")
     df = df.sort_values(["stay_id", "timestamp"])
@@ -281,7 +288,7 @@ def add_infection_and_sepsis_flag(df):
     first_sepsis = df[sepsis_condition].groupby("stay_id").head(1).index
     df.loc[first_sepsis, "sepsis"] = 1
 
-    # Cumsum propagates after the onset row: post-onset rows have has_sepsis == 1
+    # Cumsum propagates after onset: post-onset rows have has_sepsis == 1
     # and sepsis == 0, which is the exact mask for the censored label
     df["has_sepsis"] = df.groupby("stay_id")["sepsis"].cumsum()
     censored_mask = (df["has_sepsis"] == 1) & (df["sepsis"] == 0)
@@ -292,8 +299,7 @@ def add_infection_and_sepsis_flag(df):
 
 def add_septic_shock_flag(df, shock_cfg):
     """
-    Assign a ``septic_shock`` column using the Sepsis-3 definition, with the
-    same 0/1/2 censoring scheme as ``sepsis``.
+    Assign a ``septic_shock`` column using the Sepsis-3 0/1/2 censoring scheme.
 
     Onset requires all five criteria to hold simultaneously:
     active sepsis (``sepsis`` ∈ {1, 2}), MAP below threshold, lactate above

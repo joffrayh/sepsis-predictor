@@ -29,7 +29,8 @@ def parse_args():
         type=str,
         default="",
         help=(
-            "Path to raw MIMIC-IV directory containing hosp/ and icu/ subdirectories "
+            "Path to raw MIMIC-IV directory containing "
+            "hosp/ and icu/ subdirectories "
             "(e.g. data/raw/mimic-iv-3.1). Required for Phase 1 extraction; "
             "omit if extracted CSVs already exist."
         ),
@@ -73,7 +74,10 @@ def main():
             extractor.close()
         else:
             print("Skipping extraction (no --raw-data-dir provided).")
-            print("Assuming CSV files already exist in:", cfg["paths"]["extracted_dir"])
+            print(
+                "Assuming CSV files already exist in:",
+                cfg["paths"]["extracted_dir"],
+            )
 
         print("\n=== PHASE 2: STATIC COHORT GENERATION ===")
         cohort_path = os.path.join(cfg["paths"]["processed_dir"], "cohort.csv")
@@ -83,7 +87,8 @@ def main():
                 cfg["paths"],
             )
             del bacterio, demog, raw_data_dict
-            # Free cohort-builder intermediates before loading the large measurement tables
+            # Free cohort-builder intermediates before loading
+            # the large measurement tables
             gc.collect()
         else:
             print("Cohort file already exists. Loading cohort...")
@@ -137,12 +142,16 @@ def main():
         print("Loading secondary tables (fluid, vaso, UO, abx)...")
         data_dict = {
             "demog": load_and_filter_chunked(
-                os.path.join(cfg["paths"]["processed_dir"], "demog_processed.csv"),
+                os.path.join(
+                    cfg["paths"]["processed_dir"], "demog_processed.csv"
+                ),
                 valid_stays,
                 chunk_size=chunk_size,
             ),
             "abx": load_and_filter_chunked(
-                os.path.join(cfg["paths"]["processed_dir"], "abx_processed.csv"),
+                os.path.join(
+                    cfg["paths"]["processed_dir"], "abx_processed.csv"
+                ),
                 valid_stays,
                 chunk_size=chunk_size,
             ),
@@ -164,7 +173,8 @@ def main():
         }
 
         print(
-            f"Building {cfg['trajectories']['timestep']}-hour interval trajectories..."
+            f"Building {cfg['trajectories']['timestep']}"
+            "-hour interval trajectories..."
         )
         final_trajectories = build_trajectories(
             cohort,

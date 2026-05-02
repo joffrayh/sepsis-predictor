@@ -5,47 +5,55 @@ import numpy as np
 from tqdm.auto import tqdm
 
 
-def handle_outliers(df, config_path="src/data_processing/configs/outlier_bounds.json"):
-    """
-    Apply per-variable clinical bounding rules from a JSON config, then enforce
-    hardcoded special-case rules for SpO\u2082, temperature, and FiO\u2082.
+def handle_outliers(
+    df, config_path="src/data_processing/configs/outlier_bounds.json"
+):
+    r"""
+    Apply per-variable outlier rules from config and hardcoded special cases.
 
-    Config-driven rules are read from ``outlier_bounds.json`` and applied in this
-    order within each variable: (1) nullify values outside ``min_valid``/``max_valid``;
-    (2) convert in-range Fahrenheit values to Celsius; (3) forward/back-fill sensor
-    dropouts within each stay; (4) hard-clip to ``clip_low``/``clip_high``; (5) apply
-    ``log1p`` transform if specified. All fields are optional — a missing field skips
-    that rule for the variable.
+    Config-driven rules are read from ``outlier_bounds.json`` and applied
+    in this order within each variable: (1) nullify values outside
+    ``min_valid``/``max_valid``; (2) convert in-range Fahrenheit values to
+    Celsius; (3) forward/back-fill sensor dropouts within each stay; (4)
+    hard-clip to ``clip_low``/``clip_high``; (5) apply ``log1p`` transform
+    if specified. All fields are optional — a missing field skips that rule
+    for the variable.
 
-    Hardcoded rules (applied after the config loop, always if the column is present):
+    Hardcoded rules (applied after the config loop, always if the column
+    is present):
 
-    - **SpO\u2082**: values > 150 \u2192 NaN; values in (100, 150] \u2192 clipped to 100.
-    - **temp_C**: values > 90 \u2192 NaN. If ``temp_F`` exists and is NaN at that row,
-      the value is first rescued into ``temp_F`` (assumed Fahrenheit recorded in
-      the wrong column).
-    - **FiO\u2082**: values > 100 \u2192 NaN; values < 1 scaled \xd7100 (0\u20131 fraction fix);
-      values < 20 \u2192 NaN (below room air).
+    - **SpO\u2082**: values > 150 \u2192 NaN; values in (100, 150]
+      \u2192 clipped to 100.
+    - **temp_C**: values > 90 \u2192 NaN. If ``temp_F`` exists and is NaN
+      at that row, the value is first rescued into ``temp_F`` (assumed
+      Fahrenheit recorded in the wrong column).
+    - **FiO\u2082**: values > 100 \u2192 NaN; values < 1
+      scaled \xd7100 (0\u20131 fraction fix); values < 20 \u2192 NaN
+      (below room air).
 
     Parameters
     ----------
     df : pd.DataFrame
-        Wide-format measurement DataFrame (output of ``process_patient_measurements``).
+        Wide-format measurement DataFrame (output of
+        ``process_patient_measurements``).
         Values are raw, unprocessed measurement numbers.
     config_path : str, optional
-        Path to ``outlier_bounds.json``. If the file does not exist, config-driven
-        rules are skipped and a warning is printed; hardcoded rules still run.
+        Path to ``outlier_bounds.json``. If the file does not exist,
+        config-driven rules are skipped and a warning is printed;
+        hardcoded rules still run.
 
     Returns
     -------
     pd.DataFrame
-        Same DataFrame with out-of-range values nullified, clipped, or transformed.
+        Same DataFrame with out-of-range values nullified, clipped, or
+        transformed.
         Mutated in place and returned.
 
     Notes
     -----
-    The SpO\u2082 rule is a strict two-step sequence: nullify > 150 first, then clip
-    (100, 150] \u2192 100. Reversing the order would incorrectly clip values that should
-    be NaN.
+    The SpO\u2082 rule is a strict two-step sequence: nullify > 150 first,
+    then clip (100, 150] \u2192 100. Reversing the order would incorrectly
+    clip values that should be NaN.
 
     The temperature rescue copies ``temp_C > 90`` into ``temp_F`` only where
     ``temp_F`` is NaN, to avoid overwriting a valid Fahrenheit reading.
@@ -54,7 +62,8 @@ def handle_outliers(df, config_path="src/data_processing/configs/outlier_bounds.
 
     if not os.path.exists(config_path):
         print(
-            f"Warning: Config not found at {config_path}. Skipping dynamic outlier handling."
+            f"Warning: Config not found at {config_path}. "
+            "Skipping dynamic outlier handling."
         )
         return df
 
@@ -105,15 +114,21 @@ def handle_outliers(df, config_path="src/data_processing/configs/outlier_bounds.
         if transform == "log1p":
             df[col] = np.log1p(df[col])
 
-    # SpO₂: nullify impossible values first, then clip plausible out-of-scale readings — order matters
+    # SpO₂: nullify impossible values first, then clip plausible out-of-scale
+    # readings — order matters
     if "spo2" in df.columns:
         df.loc[df["spo2"] > 150, "spo2"] = np.nan
         df.loc[df["spo2"] > 100, "spo2"] = 100
 
-    # temp_C: values > 90 are assumed to be in Fahrenheit; rescue into temp_F then nullify
+    # temp_C: values > 90 are assumed to be in Fahrenheit; rescue into
+    # temp_F then nullify
     if "temp_C" in df.columns:
         if "temp_F" in df.columns:
-            mask = (df["temp_C"] > 90) & (df["temp_C"] <= 113) & (df["temp_F"].isna())
+            mask = (
+                (df["temp_C"] > 90)
+                & (df["temp_C"] <= 113)
+                & (df["temp_F"].isna())
+            )
             df.loc[mask, "temp_F"] = df.loc[mask, "temp_C"]
         df.loc[df["temp_C"] > 90, "temp_C"] = np.nan
 
@@ -138,7 +153,8 @@ def estimate_gcs_from_rass(df):
     Parameters
     ----------
     df : pd.DataFrame
-        Wide-format measurement DataFrame. Must contain a ``richmond_ras`` column.
+        Wide-format measurement DataFrame. Must contain a
+        ``richmond_ras`` column.
         A ``gcs`` column is created as all-NaN if not already present.
 
     Returns
@@ -154,7 +170,18 @@ def estimate_gcs_from_rass(df):
         print("\tSetting it to NaN and estimating from RASS where possible.")
         df["gcs"] = np.nan
 
-    mappings = {0: 15, 1: 15, 2: 15, 3: 15, 4: 15, -1: 14, -2: 12, -3: 11, -4: 6, -5: 3}
+    mappings = {
+        0: 15,
+        1: 15,
+        2: 15,
+        3: 15,
+        4: 15,
+        -1: 14,
+        -2: 12,
+        -3: 11,
+        -4: 6,
+        -5: 3,
+    }
 
     mask = df["gcs"].isna()
     df.loc[mask, "gcs"] = df.loc[mask, "richmond_ras"].map(mappings)
@@ -164,19 +191,20 @@ def estimate_gcs_from_rass(df):
 
 def estimate_fio2(df):
     """
-    Estimate FiO₂ (as a percentage, 21-100) from oxygen flow and delivery device
-    when the direct FiO₂ measurement is missing.
+    Estimate FiO₂ from flow and device when direct measurement is missing.
 
-    Flow is resolved with priority: ``oxygen_flow`` → ``oxygen_flow_cannula_rate``
-    → ``oxygen_flow_rate`` (first non-NaN wins). Device codes correspond to MIMIC-IV
-    ``oxygen_flow_device`` chartevents values. Estimation uses per-device
-    flow-to-FiO₂ lookup tables derived from standard clinical guidelines.
+    Flow is resolved with priority: ``oxygen_flow`` →
+    ``oxygen_flow_cannula_rate`` → ``oxygen_flow_rate`` (first non-NaN
+    wins). Device codes correspond to MIMIC-IV ``oxygen_flow_device``
+    chartevents values. Estimation uses per-device flow-to-FiO₂ lookup
+    tables derived from standard clinical guidelines.
 
     Device handling:
 
-    - Codes ``"0"``, ``"2"`` (nasal cannula/simple): 1-15 L/min → 24-70%; unknown
-      flow → 21% (room air).
-    - Codes ``"3"``-``"6"``, ``"8"``-``"12"`` (face mask variants): 4-15 L/min → 36-75%.
+    - Codes ``"0"``, ``"2"`` (nasal cannula/simple): 1-15 L/min →
+      24-70%; unknown flow → 21% (room air).
+    - Codes ``"3"``-``"6"``, ``"8"``-``"12"`` (face mask variants):
+      4-15 L/min → 36-75%.
     - Code ``"7"`` (high-flow oxygen): ≤6-≥15 L/min → 60-100%.
     - Code ``"13"`` (high-flow face mask): <10-≥15 L/min → 60-100%.
     - Code ``"14"`` (simple face mask): <5-≥10 L/min → 40-80%.
@@ -196,19 +224,22 @@ def estimate_fio2(df):
 
     Notes
     -----
-    Lookup tables iterate from the highest threshold downward; each pass overwrites
-    rows where flow ≤ threshold, so the smallest matching threshold wins — equivalent
-    to a range lookup. Only rows where ``fio2`` is already NaN are eligible; no
-    existing values are modified.
+    Lookup tables iterate from the highest threshold downward; each
+    pass overwrites rows where flow ≤ threshold, so the smallest
+    matching threshold wins — equivalent to a range lookup. Only rows
+    where ``fio2`` is already NaN are eligible; no existing values are
+    modified.
     """
     print("Estimating FiO2...")
 
-    # Codes "1", "15" (Ultrasonic neb), "16" (Vapomist), and "17" (Other) are intentionally
-    # unhandled as they are humidity/medication delivery devices, not supplemental O₂ sources,
-    # so flow-based FiO₂ estimation does not apply. Code "1" is never produced by the
-    # extraction query (the numbering skips from "0" to "2").
+    # Codes "1", "15" (Ultrasonic neb), "16" (Vapomist), and "17" (Other)
+    # are intentionally unhandled as they are humidity/medication delivery
+    # devices, not supplemental O₂ sources, so flow-based FiO₂ estimation
+    # does not apply. Code "1" is never produced by the extraction query
+    # (the numbering skips from "0" to "2").
 
-    # keep flow as a local Series — never write it into df to avoid block consolidation copies
+    # keep flow as a local Series — never write it into df to avoid
+    # block consolidation copies
     flow = (
         df["oxygen_flow"]
         .fillna(df["oxygen_flow_cannula_rate"])
@@ -225,6 +256,7 @@ def estimate_fio2(df):
         for threshold, fio2_val in zip(
             [15, 12, 10, 8, 6, 5, 4, 3, 2, 1],
             [70, 62, 55, 50, 44, 40, 36, 32, 28, 24],
+            strict=False,
         ):
             df.loc[mask & (flow <= threshold), "fio2"] = fio2_val
 
@@ -247,11 +279,14 @@ def estimate_fio2(df):
         for threshold, fio2_val in zip(
             [15, 12, 10, 8, 6, 4],
             [75, 69, 66, 58, 40, 36],
+            strict=False,
         ):
             df.loc[mask & (flow <= threshold), "fio2"] = fio2_val
 
     # High-flow oxygen (code "7")
-    mask = (df["fio2"].isna()) & (flow.notna()) & (df["oxygen_flow_device"] == "7")
+    mask = (
+        (df["fio2"].isna()) & (flow.notna()) & (df["oxygen_flow_device"] == "7")
+    )
     if mask.any():
         df.loc[mask & (flow >= 15), "fio2"] = 100
         df.loc[mask & (flow >= 10) & (flow < 15), "fio2"] = 90
@@ -260,14 +295,22 @@ def estimate_fio2(df):
         df.loc[mask & (flow <= 6), "fio2"] = 60
 
     # High-flow face mask (code "13")
-    mask = (df["fio2"].isna()) & (flow.notna()) & (df["oxygen_flow_device"] == "13")
+    mask = (
+        (df["fio2"].isna())
+        & (flow.notna())
+        & (df["oxygen_flow_device"] == "13")
+    )
     if mask.any():
         df.loc[mask & (flow >= 15), "fio2"] = 100
         df.loc[mask & (flow >= 10) & (flow < 15), "fio2"] = 80
         df.loc[mask & (flow < 10), "fio2"] = 60
 
     # Simple face mask (code "14")
-    mask = (df["fio2"].isna()) & (flow.notna()) & (df["oxygen_flow_device"] == "14")
+    mask = (
+        (df["fio2"].isna())
+        & (flow.notna())
+        & (df["oxygen_flow_device"] == "14")
+    )
     if mask.any():
         df.loc[mask & (flow >= 10), "fio2"] = 80
         df.loc[mask & (flow >= 5) & (flow < 10), "fio2"] = 60
@@ -278,9 +321,7 @@ def estimate_fio2(df):
 
 def handle_unit_conversions(df):
     """
-    Harmonise temperature, haemoglobin/haematocrit, and bilirubin units by
-    detecting cross-column mis-recordings and cross-filling from complementary
-    measurements.
+    Harmonise units for temperature, haemoglobin, haematocrit, and bilirubin.
 
     Rules applied in order:
 
@@ -288,8 +329,10 @@ def handle_unit_conversions(df):
        (Celsius value recorded in the Fahrenheit column).
     2. ``temp_C > 70`` → move to ``temp_F``, nullify ``temp_C``
        (Fahrenheit value recorded in the Celsius column).
-    3. Fill ``temp_F`` from ``temp_C`` where ``temp_F`` is NaN: ``F = C x 1.8 + 32``.
-    4. Fill ``temp_C`` from ``temp_F`` where ``temp_C`` is NaN: ``C = (F - 32) / 1.8``.
+    3. Fill ``temp_F`` from ``temp_C`` where ``temp_F`` is NaN:
+       ``F = C x 1.8 + 32``.
+    4. Fill ``temp_C`` from ``temp_F`` where ``temp_C`` is NaN:
+       ``C = (F - 32) / 1.8``.
     5. Fill ``hematocrit`` from ``hemoglobin``: ``Hct = (Hgb x 2.862) + 1.216``.
     6. Fill ``hemoglobin`` from ``hematocrit``: ``Hgb = (Hct - 1.216) / 2.862``.
     7. Fill ``bilirubin_direct`` from ``bilirubin_total``:
@@ -337,11 +380,15 @@ def handle_unit_conversions(df):
 
     mask = (~df["hemoglobin"].isna()) & (df["hematocrit"].isna())
     if mask.any():
-        df.loc[mask, "hematocrit"] = (df.loc[mask, "hemoglobin"] * 2.862) + 1.216
+        df.loc[mask, "hematocrit"] = (
+            df.loc[mask, "hemoglobin"] * 2.862
+        ) + 1.216
 
     mask = (~df["hematocrit"].isna()) & (df["hemoglobin"].isna())
     if mask.any():
-        df.loc[mask, "hemoglobin"] = (df.loc[mask, "hematocrit"] - 1.216) / 2.862
+        df.loc[mask, "hemoglobin"] = (
+            df.loc[mask, "hematocrit"] - 1.216
+        ) / 2.862
 
     mask = (~df["bilirubin_total"].isna()) & (df["bilirubin_direct"].isna())
     if mask.any():

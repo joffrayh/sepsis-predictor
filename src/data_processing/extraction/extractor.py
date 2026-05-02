@@ -10,11 +10,12 @@ import duckdb
 
 class MIMICExtractor:
     """
-    Stateful extractor for MIMIC-IV raw data using an in-process DuckDB connection.
+    Stateful MIMIC-IV extractor using an in-process DuckDB connection.
 
-    On construction, registers every ``.csv.gz`` file under ``hosp/`` and ``icu/``
-    as a DuckDB view so that the SQL in ``extraction_metadata.json`` can reference
-    tables by schema-qualified name without a running PostgreSQL server. The
+    On construction, registers every ``.csv.gz`` file under ``hosp/`` and
+    ``icu/`` as a DuckDB view so that the SQL in
+    ``extraction_metadata.json`` can reference tables by schema-qualified
+    name without a running PostgreSQL server. The
     connection persists across all ``extract_table`` calls and must be released
     via ``close()`` when extraction is complete.
     """
@@ -25,7 +26,7 @@ class MIMICExtractor:
         export_dir,
     ):
         """
-        Open an in-process DuckDB connection and register all MIMIC-IV tables as views.
+        Open a DuckDB connection and register all MIMIC-IV tables as views.
 
         Parameters
         ----------
@@ -34,15 +35,16 @@ class MIMICExtractor:
             ``icu/`` subdirectories of ``.csv.gz`` files.
         export_dir : str
             Destination directory for extracted pipe-delimited CSVs. Created if
-            absent. Resolved to an absolute path at construction time — pass an
-            absolute path if the working directory may change between construction
-            and extraction.
+            absent. Resolved to an absolute path at construction time —
+            pass an absolute path if the working directory may change
+            between construction and extraction.
 
         Notes
         -----
-        The DuckDB connection is in-process (no socket, no server, no credentials).
-        ``close()`` must be called when extraction is complete to release file handles
-        and DuckDB resources; ``main.py`` ensures this in a ``finally`` block.
+        The DuckDB connection is in-process (no socket, no server, no
+        credentials). ``close()`` must be called when extraction is
+        complete to release file handles and DuckDB resources;
+        ``main.py`` ensures this in a ``finally`` block.
         """
         self.raw_data_dir = raw_data_dir
         self.export_dir = os.path.join(os.getcwd(), export_dir)
@@ -53,7 +55,7 @@ class MIMICExtractor:
 
     def _register_views(self):
         """
-        Register all MIMIC-IV ``.csv.gz`` files as DuckDB views under their schema.
+        Register MIMIC-IV ``.csv.gz`` files as DuckDB views under their schema.
 
         Files under ``hosp/`` become ``mimiciv_hosp.<stem>`` views; files under
         ``icu/`` become ``mimiciv_icu.<stem>`` views, where ``<stem>`` is the
@@ -117,12 +119,12 @@ class MIMICExtractor:
 
     def _run_with_timer(self, query, output_path):
         """
-        Execute a DuckDB COPY query with a live elapsed-time and write-speed display.
+        Execute a DuckDB COPY query with live elapsed-time and speed display.
 
         A daemon ticker thread wakes every 0.4 s, samples the output file size,
         and computes a rolling MB/s estimate over a 5-sample window. The actual
-        export runs in the calling thread; the ticker is joined before the method
-        returns even if the ``COPY`` raises.
+        export runs in the calling thread; the ticker is joined before
+        the method returns even if the ``COPY`` raises.
 
         Parameters
         ----------
@@ -163,14 +165,17 @@ class MIMICExtractor:
                 mb_written = written / 1_048_576
                 speed_str = ""
                 # Suppress speed until at least two samples with non-zero bytes
-                # exist — avoids division-by-zero on fast queries that buffer before flush
+                # exist — avoids division-by-zero on fast queries that
+                # buffer before flush
                 if len(samples) >= 2 and written > 0:
                     dt = samples[-1][0] - samples[0][0]
                     db = samples[-1][1] - samples[0][1]
                     if dt > 0 and db > 0:
                         speed_str = f" | {(db / 1_048_576) / dt:.1f} MB/s"
 
-                mb_str = f" | {mb_written:.1f} MB written" if written > 0 else ""
+                mb_str = (
+                    f" | {mb_written:.1f} MB written" if written > 0 else ""
+                )
                 line = (
                     f"\r  {spinner[i % len(spinner)]} "
                     f"{elapsed:.0f}s{mb_str}{speed_str}   "
@@ -222,7 +227,9 @@ class MIMICExtractor:
         with open(metadata_path) as f:
             metadata = json.load(f)
 
-        items = [(k, v) for k, v in metadata.items() if not tables or k in tables]
+        items = [
+            (k, v) for k, v in metadata.items() if not tables or k in tables
+        ]
         total = len(items)
         for idx, (key, conf) in enumerate(items, start=1):
             self.extract_table(key, conf, index=idx, total=total)
