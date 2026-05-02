@@ -54,6 +54,7 @@ def calculate_derived_variables(df):
     df["charlson_comorbidity_index"] = df["charlson_comorbidity_index"].fillna(
         df["charlson_comorbidity_index"].median()
     )
+    df["los"] = df["los"].fillna(df["los"].median())
     df["vaso_median"] = df["vaso_median"].fillna(0)
     df["vaso_max"] = df["vaso_max"].fillna(0)
 

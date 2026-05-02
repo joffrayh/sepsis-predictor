@@ -536,7 +536,7 @@ def standardise_patient_trajectories(
                 uo_total = uo_data[uo_data["charttime"] < window_end]["value"].sum()
 
             # antibiotics
-            abx_given, hrs_first_abx, num_abx = 0, None, 0
+            abx_given, hrs_first_abx, num_abx = 0, 999.0, 0
             if not abx_data.empty:
                 abx_mask = (abx_data["starttime"] <= window_end) & (
                     abx_data["stoptime"] >= window_start
