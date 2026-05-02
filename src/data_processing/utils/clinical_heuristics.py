@@ -113,7 +113,7 @@ def handle_outliers(df, config_path="src/data_processing/configs/outlier_bounds.
     # temp_C: values > 90 are assumed to be in Fahrenheit; rescue into temp_F then nullify
     if "temp_C" in df.columns:
         if "temp_F" in df.columns:
-            mask = (df["temp_C"] > 90) & (df["temp_F"].isna())
+            mask = (df["temp_C"] > 90) & (df["temp_C"] <= 113) & (df["temp_F"].isna())
             df.loc[mask, "temp_F"] = df.loc[mask, "temp_C"]
         df.loc[df["temp_C"] > 90, "temp_C"] = np.nan
 
