@@ -48,7 +48,7 @@ def calculate_derived_variables(df):
     df["gender"] = df["gender"] - 1
     # MIMIC-IV de-identification caps age at 91 for patients ≥ 91 years old;
     # some rows encode this as a large integer rather than 91
-    df.loc[df["age"] > 150, "age"] = 91.4
+    df.loc[df["age"] > 150, "age"] = 91
     df["mechvent"] = df["mechvent"].fillna(0)
     df.loc[df["mechvent"] > 0, "mechvent"] = 1
     df["charlson_comorbidity_index"] = df["charlson_comorbidity_index"].fillna(

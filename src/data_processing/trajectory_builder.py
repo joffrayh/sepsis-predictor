@@ -497,9 +497,12 @@ def standardise_patient_trajectories(
                     if col not in ["stay_id", "charttime"]
                 }
             else:
+                # Suppress "Mean of empty slice" warning when a concept column has no
+                # values in the window, this is expected and not an error
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore", RuntimeWarning)
-                    measurements = window_data.mean(axis=0, skipna=True).to_dict()
+                    with np.errstate(invalid="ignore"):
+                        measurements = window_data.mean(axis=0, skipna=True).to_dict()
 
             # fluids
             fluid_total, fluid_step = 0, 0
