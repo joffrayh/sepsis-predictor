@@ -1,7 +1,9 @@
 import argparse
 import gc
 import os
+import random
 
+import numpy as np
 import pandas as pd
 import yaml
 from cohort_builder import build_and_save_cohorts
@@ -62,6 +64,11 @@ def main():
 
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
+
+    seed = cfg.get("reproducibility", {}).get("random_seed", 42)
+    random.seed(seed)
+    np.random.seed(seed)
+    print(f"Random seed set to {seed}.")
 
     try:
         print("=== PHASE 1: EXTRACTION ===")

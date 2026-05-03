@@ -202,13 +202,18 @@ def handle_missing_values(df, missing_threshold=0.8, knn_neighbors=1):
     ]
 
     if cols_for_knn:
+        # Sort deterministically so KNN tie-breaking and chunk assignment
+        # are identical across runs regardless of upstream row ordering.
+        df = df.sort_values(["stay_id", "charttime"])
+        df = df.reset_index(drop=True)
+
         ref = df[cols_for_knn].values.copy()
 
         # Build patient-aligned chunks: accumulate whole patients until
         # chunk_size is reached so KNN never sees rows from two different
         # patients in one fit
         print("\tBuilding patient-aligned chunks for KNN...")
-        patient_groups = df.groupby("stay_id", sort=False).apply(
+        patient_groups = df.groupby("stay_id", sort=True).apply(
             lambda x: x.index.tolist(), include_groups=False
         )
         chunks = []

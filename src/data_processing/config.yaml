@@ -104,3 +104,13 @@ trajectories:
   # Trajectory rows accumulated before flushing to disk (Phase 3c).
   # Reduce if Phase 3c causes OOM.
   flush_every_rows: 5000
+
+
+# ------------------------------------------------------------------------------
+# reproducibility: Global random seed applied at pipeline startup.
+#                  Controls numpy and Python random state so all
+#                  stochastic operations (KNN tie-breaking, etc.) are
+#                  deterministic across runs.
+# ------------------------------------------------------------------------------
+reproducibility:
+  random_seed: 42
