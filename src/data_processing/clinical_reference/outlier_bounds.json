@@ -33,5 +33,6 @@
   "arterial_co2_pressure": { "max_valid": 200 },
   "arterial_base_excess": { "min_valid": -50 },
   "bilirubin_total": { "max_valid": 30 },
-  "temp_F": { "min_valid": 77, "max_valid": 113 }
+  "temp_F": { "min_valid": 77, "max_valid": 113 },
+  "temp_C": { "min_valid": 25 }
 }
