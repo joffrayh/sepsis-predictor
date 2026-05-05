@@ -34,6 +34,8 @@ Out of the box, FRAMES supports:
 - **XGBoost**
 - **LSTM**
 
+Other models can be added by implementing a new wrapper class and updating the model factory. See [TRAINING_PIPELINE.md](TRAINING_PIPELINE.md) and [tutorial.ipynb](src/model_training/tutorial.ipynb) for details on the training pipeline architecture and how to add your own model.
+
 ### Use Cases
 
 FRAMES is built for researchers who want to:
