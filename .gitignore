@@ -9,7 +9,6 @@ wheels/
 # Virtual environments
 .venv
 
-
 # Data
 /data/
 
@@ -26,3 +25,7 @@ artifacts*/
 
 # misc
 .trash/
+.github/agents/
+.github/briefs/
+.github/prompts/
+.github/skills/
