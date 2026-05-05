@@ -1,4 +1,4 @@
-# MIMIC-IV Sepsis Prediction — Data Pipeline
+# FRAMES Data Pipeline
 
 This document describes how to set up the environment and run the full data processing pipeline, from downloading the raw MIMIC-IV dataset through to a final ML-ready Parquet file.
 
