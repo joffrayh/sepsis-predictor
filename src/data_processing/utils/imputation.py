@@ -204,7 +204,7 @@ def handle_missing_values(df, missing_threshold=0.8, knn_neighbors=1):
     if cols_for_knn:
         # Sort deterministically so KNN tie-breaking and chunk assignment
         # are identical across runs regardless of upstream row ordering.
-        df = df.sort_values(["stay_id", "charttime"])
+        df = df.sort_values(["stay_id", "timestamp"])
         df = df.reset_index(drop=True)
 
         ref = df[cols_for_knn].values.copy()
