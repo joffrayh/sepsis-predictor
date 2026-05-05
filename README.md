@@ -13,7 +13,7 @@
 
 Sepsis prediction research has produced very encouraging results, yet the field is restricted by a fundamental problem: significant variability across studies. Differences include patient cohorts, sepsis definitions, feature sets, and evaluation metrics, making it nearly impossible to compare or reproduce published findings.
 
-**FRAMES** addresses this by providing a fully open-source, end-to-end framework built on the [MIMIC-IV](https://physionet.org/content/mimiciv/) dataset. It standardises every stage of the research process — from raw data extraction through to model evaluation — so that results produced by the framework are meaningful, reproducible, and comparable.
+**FRAMES** addresses this by providing a fully open-source, end-to-end framework built on the [MIMIC-IV](https://physionet.org/content/mimiciv/) dataset. It standardises every stage, from raw data extraction through to model evaluation, so that results produced by the framework are meaningful, reproducible, and comparable.
 
 ### FAIR Principles
 
