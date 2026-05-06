@@ -1,21 +1,18 @@
 experiment:
-  base_name: "Sepsis_Prediction"
-  active_model: "lstm"
+  base_name: "Sepsis_Prediction"  # used to name the MLflow experiment
+  active_model: "xgboost"         # "lightgbm", "xgboost", or "lstm"
   random_state: 42
 
 system:
-  # for sequence models, this is set automatically in the BaseSequenceModel
-  # for tabular models, this should be set by user in the fit_model method (see lightgbm_model.py for example) 
-  n_jobs: -1 
-
-  # device to use, set by the BaseSepsisModel (self.device), accessible by all inherited models.
-  # see lstm_model.py for example of how it can be used.
+  # -1 uses all available CPU cores. for sequence models this is set automatically.
+  n_jobs: -1
+  # "cpu" or "cuda". only relevant for the LSTM.
   device: "cpu"
 
 data:
   path: "data/processed_files/patient_timeseries_with_features.parquet"
-  target_window: 3
-  target_horizon: 1
+  target_window: 3        # number of timesteps ahead to check for sepsis onset
+  target_horizon: 1       # how many timesteps ahead to start looking
   timestep_duration_hours: 4
 
   split:
@@ -25,9 +22,9 @@ data:
 
 tabular:
   feature_engineering:
-    use_lags: false
+    use_lags: false         # adds lag features, e.g. heart_rate_lag1, heart_rate_lag2
     num_lags: 3
-    lag_exclude_cols:
+    lag_exclude_cols:       # columns skipped when generating lags (demographics, missingness indicators)
       - "gender"
       - "age"
       - "charlson_comorbidity_index"
@@ -35,14 +32,14 @@ tabular:
       - "hours_since_wbc"
       - "hours_since_creatinine"
       - "hours_since_platelets"
-      - "lactate_measured" 
+      - "lactate_measured"
       - "wbc_measured"
       - "creatinine_measured"
       - "platelets_measured"
-    
-    use_rolling: false
-    rolling_windows_hours: [8, 16] # window sizes in actual hours
-    rolling_exclude_cols:
+
+    use_rolling: false              # adds rolling mean/std/min/max features
+    rolling_windows_hours: [8, 16]  # window sizes in hours
+    rolling_exclude_cols:           # same exclusion logic as lag_exclude_cols
       - "gender"
       - "age"
       - "charlson_comorbidity_index"
@@ -50,15 +47,17 @@ tabular:
       - "hours_since_wbc"
       - "hours_since_creatinine"
       - "hours_since_platelets"
-      - "lactate_measured"  
+      - "lactate_measured"
       - "wbc_measured"
       - "creatinine_measured"
       - "platelets_measured"
 
   optimisation:
-    num_trials: 1
+    num_trials: 20  # number of HPO trials
 
   models:
+    # search_space format: [min, max, type]
+    # type is one of: "float", "int", "log", "int_log"
     lightgbm:
       search_space:
         learning_rate: [0.005, 0.05, "log"]
@@ -71,7 +70,7 @@ tabular:
         reg_alpha: [1.0, 50.0, "log"]
         reg_lambda: [1.0, 50.0, "log"]
         n_estimators: [100, 600, "int"]
-        
+
     xgboost:
       search_space:
         learning_rate: [0.005, 0.05, "log"]
@@ -89,15 +88,17 @@ sequence:
   lstm:
     params:
       batch_size: 256
-      epochs: 1
+      epochs: 20          
       learning_rate: 0.001
-      patience: 4
+      patience: 4         # early stopping halts training if val AUPRC doesn't improve for this many epochs
+      
       # model architecture
-      hidden_dim: 64
-      num_layers: 2
+      hidden_dim: 64      
+      num_layers: 2       
       dropout: 0.2
-      num_heads: 4
-      fc_dim: 32
+      num_heads: 4        # attention heads must divide evenly into hidden_dim (i.e. 64 / 4 = 16)
+      fc_dim: 32          # size of the fully connected layer between attention output and classifier (smaller than hidden_dim to reduce overfitting)
+      
       # regularisation
       weight_decay: 1.0e-5
-      clip_grad_norm: 1.0
+      clip_grad_norm: 1.0  # clips gradients to this, to stop exploding gradients

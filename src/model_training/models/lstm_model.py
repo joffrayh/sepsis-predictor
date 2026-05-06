@@ -5,6 +5,8 @@ import numpy as np
 from tqdm import tqdm
 import mlflow
 import mlflow.pytorch
+from mlflow.types.schema import Schema, TensorSpec
+from mlflow.models.signature import ModelSignature
 from sklearn.metrics import average_precision_score
 from .base_model import BaseSequenceModel
 
@@ -137,8 +139,6 @@ class LSTMModelWrapper(BaseSequenceModel):
         return np.concatenate(test_preds), np.concatenate(test_targets)
 
     def save_model(self, model_name):
-        from mlflow.types.schema import Schema, TensorSpec
-        from mlflow.models.signature import ModelSignature
 
         input_schema = Schema([TensorSpec(np.dtype(np.float32), (-1, -1, len(self.features)))])
         signature = ModelSignature(inputs=input_schema)
