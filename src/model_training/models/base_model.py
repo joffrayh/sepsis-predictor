@@ -75,7 +75,7 @@ class BaseSequenceModel(BaseSepsisModel):
         print("Scaling features using StandardScaler...")
         self.scaler = StandardScaler()
         
-        # scale safely avoiding modifying the external dataframe
+        # scaling
         df_train_scaled = df_train.copy()
         df_val_scaled = df_val.copy()
         df_train_scaled[self.features] = self.scaler.fit_transform(df_train[self.features])
@@ -84,7 +84,7 @@ class BaseSequenceModel(BaseSepsisModel):
         train_ds = SepsisSequenceDataset(df_train_scaled, self.features)
         val_ds = SepsisSequenceDataset(df_val_scaled, self.features)
         
-        # retrieve dynamic configs, fallback naturally to 256 and optimal cores
+        # dataloaders
         batch_size = self.model_params.get('params', {}).get('batch_size', 256)
         n_jobs = self.config['system'].get('n_jobs', 1)
         if n_jobs < 0:
